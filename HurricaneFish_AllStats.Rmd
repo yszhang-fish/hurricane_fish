@@ -1,0 +1,4027 @@
+---
+title: "All Hurricane Fish Stats"
+author: "SZ"
+date: "2/20/2022"
+output: html_document
+---
+
+Includes all the code for the stats in the manuscript
+1. mBACI ANOVAs/barplots
+2. mBACI GAMs/scatterplots
+3. Hurricane Intensity ~ change analyses
+4. Early and late season BACI analyses (Arthur and Matthew)
+See Hurricane_Fish_BACI_GLMM/HurricaneFish_BACI_Bayes for analysis of scatters
+See HurricaneFish_CommStat file for community analyses
+
+
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# knitr::opts_knit$set(root.dir = '/nas/longleaf/home/yszhang/Hurricane_Fish/2021/Jan')
+
+
+library(gridExtra)
+library(ggpubr)
+library(kableExtra)
+library(Hmisc)
+library(rstatix)
+library(MASS)
+library(plyr)
+library(tidyverse)
+library(parallel)
+library(lubridate)
+# library(agricolae)
+library(mgcv)
+library(ggpmisc)
+numCores <- detectCores()
+
+## Load the Rdata file bc those NMS stats take stupidly long
+# load('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Hurricane_Impacts_on_Fishes/Community_Analysis/src/storm.RData')
+```
+
+```{r figure settings, include = FALSE}
+# Overall figure theme
+stoopidtheme <- theme_bw() + 
+  theme(
+    panel.grid.major 	= element_blank(),
+    panel.grid.minor 	= element_blank(), 
+    panel.border 		= element_blank(), 
+    axis.line 			= element_line(colour = "black"), 
+    text 				= element_text(size = 10),
+    axis.text 			= element_text(size = 10),
+    axis.title 			= element_text(size = 10),
+    axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)),
+    legend.position="none",
+    legend.box = "horizontal",
+    legend.title = element_blank(),
+    legend.key = element_rect(size = 5),
+    legend.key.size = unit(1, 'lines'))
+ylims <- ylim(0, 1)
+letterlabeltextsize <- 7
+barwidth <- 0.75
+# labels <- geom_text(aes(label = mean), position = position_dodge(width = 0.9), vjust = -0.25)
+
+# potential colors to use
+nicecolors <- c("#08519C", "#9ECAE1", "#882255", "#CC6677")  # dark blue, light blue, dark magenta, pink
+twocolors <- c("gray40", "#6082B6")  # gray and blue
+twogreens <- c('#00FF7F', '#008B45')
+twocolors <- c('gray40', '#6082B6' )
+redblue <- c('skyblue1', 'indianred')
+blacks <- c('#000000', '#000000')
+# 0 = 0066FF, 1 =FF3300
+```
+
+Data for BACI & mBACI
+```{r data, include = FALSE}
+## read in data from only segrass beds, without april and november, CPUE calculated as per km
+envspp.dum <- read.csv('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Hurricane_Impacts_on_Fishes/Community_Analysis/data/2021_Clean/envspp_dum_sg_7May21.csv', header = TRUE, row.names = 1, sep = ',')
+
+
+# add a col for CPUE per 100 m
+envspp.dum <- envspp.dum %>%
+  mutate(cpue.dist.100m = cpue.dist.km * 0.1,
+         cpue.np.dist.100m = cpue.np.dist.km * 0.1)
+
+# Clean up the variable types
+envspp.dum$Month <- as.factor(envspp.dum$Month)
+envspp.dum$Year <- as.factor(envspp.dum$Year)
+envspp.dum$Station <- as.factor(envspp.dum$Station)
+envspp.dum$Hurricane <- factor(envspp.dum$Hurricane, levels = c('No Storm', 'Tropical Storm',  'Hurricane'))
+envspp.dum$Prepost_fctr <- factor(envspp.dum$Prepost_fctr, levels = c('Before', 'After'))
+envspp.dum$Stormdate <- ymd(envspp.dum$Stormdate)
+envspp.dum$Date <- ymd(envspp.dum$Date)
+envspp.dum <- envspp.dum %>%
+  dplyr::select(-c(Hur_pp, oHur)) %>%
+  unite('Hur_pp', Hurricane, Prepost_fctr, remove = FALSE) %>%
+  mutate(oHur = recode(Hurricane,
+                       'No Storm' = 0,
+                       'Hurricane' = 1,
+                       'Tropical Storm' = 2))
+envspp.dum$oHur <- factor(envspp.dum$oHur, levels = c('0', '1', '2'), ordered = TRUE )
+envspp.dum$Hur_pp <- factor(envspp.dum$Hur_pp, levels = c("No Storm_Before", "Hurricane_Before",  "No Storm_After", "Hurricane_After"))
+
+# Filter the data for the specific time frames and years of interests
+## 1. Major storms: Only Irene, Florence and Dorian as Hurricane Years
+envspp.dum.maj <- envspp.dum %>%
+  dplyr::filter(Year != 2014 & Year != 2016 & Year != 2010 & Year != 2012) %>%
+  droplevels()
+
+## 2. Samples within 23 days of storm impact
+envspp.dum.maj.23 <- envspp.dum.maj %>%
+  dplyr::filter(between(as.integer(Prepost_num), -23, 23))
+
+## 3. Only trawls in seagrass beds
+envspp.dum.maj.sg <- envspp.dum.maj %>%
+  filter(Habitat == 'seagrass')
+
+envspp.dum.maj.23.sg <- envspp.dum.maj.23 %>%
+  filter(Habitat == 'seagrass')
+
+```
+
+Data for ACE
+```{r}
+cpue.dif.pdat <- read.csv('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Hurricane_Impacts_on_Fishes/Community_Analysis/src/dif_cpue_10Mar21.csv')
+
+cpue.ace.pdat <- read.csv('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Hurricane_Impacts_on_Fishes/Community_Analysis/src/storms_ace_cpue_rain.csv')
+
+cpue.ace.pdat <- cpue.ace.pdat %>%
+  mutate(Stormdate = mdy(Stormdate)) %>%
+  mutate(Month = as.factor(lubridate::month(Stormdate)))
+```
+
+
+
+# Environmental Correlates
+Temperature
+```{r}
+# short term
+envspp.dum.maj.23.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Temp, na.rm = TRUE), 
+                   max = max(Temp, na.rm = TRUE), 
+                   mean = mean(Temp, na.rm = TRUE)))
+envspp.dum.maj.23.sg %>%
+  aov(Temp ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+# seasonal
+envspp.dum.maj.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Temp, na.rm = TRUE), 
+                   max = max(Temp, na.rm = TRUE), 
+                   mean = mean(Temp, na.rm = TRUE)))
+envspp.dum.maj.sg %>%
+  aov(Temp ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+```
+
+Salinity
+```{r}
+# short term
+envspp.dum.maj.23.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Sal, na.rm = TRUE), 
+                   max = max(Sal, na.rm = TRUE), 
+                   mean = mean(Sal, na.rm = TRUE)))
+envspp.dum.maj.23.sg %>%
+  aov(Sal ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+# seasonal
+envspp.dum.maj.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Sal, na.rm = TRUE), 
+                   max = max(Sal, na.rm = TRUE), 
+                   mean = mean(Sal, na.rm = TRUE)))
+envspp.dum.maj.sg %>%
+  aov(Sal ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+```
+
+
+# mBACI
+## mBACI: CPUE
+### Short-term mBACI: CPUE
+#### CPUE23 : mBACI Bargraph & ANOVA
+CPUE23: mBACI ANOVA
+```{r}
+##  Test for assumptions
+levene_test(log(cpue.dist.100m) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg)  # passes
+by((log(envspp.dum.maj.23.sg$cpue.dist.100m)), envspp.dum.maj.23.sg$Hur_pp, shapiro.test)  # only passes for Nostorm before
+
+# run the ANOVA test on log transformed data
+summary(aov(log(cpue.dist.100m) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))  # not signif interaction 
+# post hoc tests
+TukeyHSD(aov(log(cpue.dist.100m) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))  # only hurricane before vs hurricane after
+plot(aov(log(cpue.dist.100m) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))
+
+# Look at sample breakdown EDA
+envspp.dum.maj.23.sg %>%
+  count(Hurricane, Prepost_fctr)
+
+envspp.dum.maj.23.sg %>%
+  count(Station)
+
+# Look at means
+envspp.dum.maj.23.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(n = n(),
+            mean = mean(cpue.dist.100m, na.rm = TRUE),
+            sd = sd(cpue.dist.100m, na.rm = TRUE),
+            se = sd/sqrt(n))
+            
+```
+
+CPUE23: mBACI Bargraph
+```{r}
+cpue.aov.23 <- envspp.dum.maj.23.sg %>%
+  # filter(cpue.dist.100m < 9000) %>%
+  # mutate(cpue.dist.100m = log(cpue.dist.100m)) %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(cpue.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop') %>%
+  ggplot(aes(x = factor(Prepost_fctr, level = c('Before', 'After')), y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('with Pinfish') +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_fill_manual(values = twocolors, 
+                    breaks = c('No Storm', 'Hurricane'),
+                    labels = c("Control", "Impact")) +
+  # geom_text(aes(x=Prepost_fctr, y = sig.lab + 200, group = Hurricane,
+  #               label=c('', '', '', ''), ), 
+  #           position=position_dodge(0.9), size = 3.5) + 
+  ylim(0, 410) + 
+  annotate("text", x = 2.15, y = 400, label = "p=0.122", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.8, 0.9), legend.direction = 'horizontal')
+
+cpue.aov.23
+```
+
+
+### Whole season CPUE
+#### CPUE Season: mBACI Bargraph & ANOVA
+CPUE Season: mBACI ANOVA with 4th root transformation
+```{r}
+# sample breakdown
+envspp.dum.maj.sg %>%
+  group_by(Hur_pp) %>%
+  summarize(rng = range(Prepost_num))
+
+# Look at means
+envspp.dum.maj.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(n = n(),
+            mean = mean(cpue.dist.100m, na.rm = TRUE),
+            sd = sd(cpue.dist.100m, na.rm = TRUE),
+            se = sd/sqrt(n))
+
+# look at histogram of data distn
+hist(envspp.dum.maj.sg$cpue.dist.100m)
+hist(log(envspp.dum.maj.sg$cpue.dist.100m+1))
+hist((envspp.dum.maj.sg$cpue.dist.100m)^(1/4))  # fourth root is most normally dist
+
+# check outliers
+performance::check_outliers(aov(cpue.dist.100m^(1/4) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+##  Test for homogeneity of variances -- nothing passes as there is definitely more variance in before data
+levene_test((cpue.dist.100m^(1/4)) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg, center = 'median') # fails
+fligner.test(cpue.dist.100m^(1/4) ~ Hur_pp, data = envspp.dum.maj.sg) # fails
+
+# test for normality -- after data passes. Hur/before is close.
+by((envspp.dum.maj.sg$cpue.dist.100m^(1/4)), envspp.dum.maj.sg$Hur_pp, shapiro.test)
+# plot the ANOVA, and the QQ plot looks normal-esque,but there's definitely more variance in the last grp is
+plot(aov((cpue.dist.100m^(1/4)) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+
+
+# run the ANOVA test on fourth root transformed data since nothing passes regardless. Use this for comparison with the short term data
+summary(aov(cpue.dist.100m^(1/4) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))  # not signif
+# post hoc tests
+TukeyHSD(aov(cpue.dist.100m^(1.4) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))  # only hurricane before vs hurricane after
+plot(aov((cpue.dist.100m^(1/4)) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+
+```
+
+CPUE Season: mBACI Bargraph
+```{r}
+cpue.aov.yr <- envspp.dum.maj.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(cpue.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop') %>%
+  ggplot(aes(x = factor(Prepost_fctr, level = c('Before', 'After')), y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('with Pinfish') +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_fill_manual(values = twocolors, labels = c("Control", "Impact")) +
+  ylim(0, 410) +
+  annotate("text", x = 2.15, y = 400, label = "p=0.151", size = 3.5) +
+  stoopidtheme
+  # theme(legend.position = c(0.8, 0.9))
+cpue.aov.yr
+```
+
+#### CPUE Season: mBACI GAMs
+CPUE Season mBACI - Get the predictions for the GAM
+```{r}
+## 1. make the dataframe to be predicted over
+# before dates
+b4dat <- expand.grid(Prepost_num = seq(-119, 0, length = 120),
+                     Hur_pp = c('No Storm_Before', 'Hurricane_Before'))
+# after dates
+afdat <- expand.grid(Prepost_num = seq(0, 80, length = 120),
+                     Hur_pp = c('No Storm_After', 'Hurricane_After'))
+pdat <- rbind(b4dat, afdat)  # bind them together
+
+## 2. the model
+# this is only hinged on days to storm
+mod <- envspp.dum.maj.sg %>% 
+  group_by(Hur_pp) %>% 
+  do(model = gam(cpue.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .))
+
+## get the inverse family link function
+ilink.cb <- mod[[2]][[1]][["family"]][["linkinv"]]
+ilink.ib <- mod[[2]][[2]][["family"]][["linkinv"]]
+ilink.ca <- mod[[2]][[3]][["family"]][["linkinv"]]
+ilink.ia <- mod[[2]][[4]][["family"]][["linkinv"]]
+
+## 3. Run the model on all BACI elements (grouped by Hur_pp) and append it to the envspp.dum.maj.sg data
+# this runs a separate model for each level of Hur_pp
+# then calcualte the differences between impact vs control groups
+cpue.pred <- pdat %>%
+  group_by(Hur_pp) %>%
+  nest %>%
+  inner_join(mod) %>%
+  mutate(preds = map2(model, data, 
+                      ~as.data.frame(predict(.x, .y, se.fit = TRUE)))) %>%
+  unnest(cols = c(preds, data))
+
+# long way of doing this bc i just cant figure it out
+cpue.pred <- cpue.pred %>%
+  mutate(resp_fit = c(ilink.cb(fit[Hur_pp == 'No Storm_Before']),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After']),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before']),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'])),
+         resp_upr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] + (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] + (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] + (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] + (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         resp_lwr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] - (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] - (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] - (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] - (2*se.fit[Hur_pp == 'Hurricane_After']))),
+          se.upr = (resp_upr - resp_fit),
+         se.lwr = (resp_fit - resp_lwr)) %>%
+  separate(Hur_pp, c("Hurricane", 'Prepost_fctr'), sep = '_', remove = FALSE) %>%
+  group_by(Prepost_num, Prepost_fctr) %>%
+  mutate(diff = resp_fit[Hurricane == 'No Storm'] - resp_fit) %>%
+  mutate(upr.diff = diff + (1.96 * sqrt((se.upr[Hurricane == 'No Storm'])^2 + se.upr^2))) %>%
+  mutate(lwr.diff = diff - (1.96 * sqrt(se.lwr[Hurricane == 'No Storm']^2 + se.lwr^2)))
+```
+
+CPUE Season mBACI - Plot the predicted smooth (not the ggplot smooth)
+```{r}
+cpue.scat.yr.c <- ggplot() +
+  geom_point(data = envspp.dum.maj.sg, 
+             aes(x = Prepost_num, y = cpue.dist.100m, 
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp), 
+               size = 2, position = position_dodge(0.5)) +
+  geom_line(data = cpue.pred, aes(x = Prepost_num, y = resp_fit, group = Hur_pp, linetype = Hur_pp, color = Hur_pp)) +
+  geom_ribbon(data = cpue.pred, aes(x = Prepost_num, ymin = resp_lwr, ymax = resp_upr, group = Hur_pp, fill = Hur_pp), alpha = 0.5, color = NA) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    xlab('Days Since Storm') +
+    ylab(bquote('CPUE (100' *m^-1*')')) +
+    stoopidtheme +
+    guides(fill = guide_legend(ncol = 2)) +
+    theme(legend.position = c(0.8, 0.85))
+cpue.scat.yr.c
+```
+
+CPUE Season mBACI - Plot the difference smooths with errors
+```{r}
+## 4. plot the difference smooths with errors
+dif.cpue.p1 <- cpue.pred %>%
+  group_by(Prepost_num) %>%
+  filter(!Hurricane == 'No Storm') %>%
+  ggplot(aes(x=Prepost_num, y = diff, 
+             group = Prepost_fctr, color = Prepost_fctr, 
+             linetype = Prepost_fctr)) +
+    geom_ribbon(aes(ymin = lwr.diff, ymax = upr.diff), alpha = 0.3, color = NA) +
+    # geom_point()
+    # geom_line() +
+    geom_smooth() +
+    scale_linetype_manual(values = c(c('dashed', 'solid'), twocolors), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    scale_color_manual(values = c('#6082B6', '#6082B6'), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    ylab('Difference') +
+    xlab('Days Since Storm') +
+    stoopidtheme +
+    theme(legend.position = c(0.9, 0.9))
+dif.cpue.p1
+
+## plot the scatter plot with BACI lines over top of the difference between smooths
+# if the smooths (incl error) overlaps zero, then these trends are not different
+ggarrange(cpue.scat.yr.c, dif.cpue.p1, ncol = 1)
+
+```
+
+CPUE Season: Look at model diagnostics
+```{r, warning=FALSE}
+# run with  Prepost_num as the only explanatory variable
+envspp.dum.maj.sg %>% 
+      group_by(Hur_pp) %>%
+      do({model = gam(cpue.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .)    # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+```
+
+
+#### All mBACI CPUE Figs 
+CPUE mBACI combined  short-term and season figures
+```{R}
+
+ggarrange(cpue.aov.23, cpue.aov.yr, cpue.scat.yr.c, dif.cpue.p1, nrow = 2, ncol = 2, labels = 'AUTO', align = 'hv')
+
+ggarrange(cpue.aov.23 + rremove("xlab") + rremove("x.text") + rremove("x.ticks"), 
+          cpue.scat.yr.c + rremove("xlab") + rremove("x.text") + rremove("x.ticks"),
+          cpue.aov.yr, 
+          dif.cpue.p1, 
+          nrow = 2, ncol = 2, 
+          labels = c('A', 'C', 'B', 'D'), align = 'hv')
+
+ggarrange(cpue.aov.23 + rremove("xlab") + rremove("x.text") + rremove("x.ticks"), 
+          cpue.aov.yr, 
+          ncol = 1,
+          labels = 'AUTO' , align = 'hv')
+
+ggarrange(cpue.scat.yr.c + rremove("xlab") + rremove("x.text") + rremove("x.ticks"),
+          dif.cpue.p1, 
+          ncol = 1,
+          labels = c('B', 'D') , align = 'hv')
+
+```
+
+
+## mBACI: CPUE-LR
+### Short-term mBACI: CPUE-Lr
+#### Short-term mBACI: CPUE-Lr: Bargraph and ANOVA
+CPUE-LR-23: mBACI ANOVA
+```{r}
+# look at histogram of data distn
+hist(envspp.dum.maj.23.sg$cpue.np.dist.100m)
+hist(log(envspp.dum.maj.23.sg$cpue.np.dist.100m+1))
+hist((envspp.dum.maj.23.sg$cpue.np.dist.100m)^(1/4))
+
+##  Test for assumptions
+levene_test(cpue.np.dist.100m ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg)  # passes w/o transformation
+by(envspp.dum.maj.23.sg$cpue.np.dist.100m, envspp.dum.maj.23.sg$Hur_pp, shapiro.test)
+
+# run the ANOVA test on untransformed data
+summary(aov(cpue.np.dist.100m ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))  # not signif
+# post hoc tests
+TukeyHSD(aov(cpue.np.dist.100m ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))  # only hurricane before vs hurricane after
+
+# Look at means
+envspp.dum.maj.23.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(cpue.np.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.np.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se))
+
+
+```
+
+CPUE-LR-23: mBACI Bargraph
+```{r, warning=FALSE}
+cpuenp.aov.23 <- envspp.dum.maj.23.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(cpue.np.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.np.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop') %>%
+  ggplot(aes(x = factor(Prepost_fctr, level = c('Before', 'After')), y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('') +
+  ylab(bquote('CPUE-Lr (100' *m^-1*')')) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_fill_manual(values = twocolors, labels = c("Control", "Impact")) +
+  # geom_text(aes(x=Prepost_fctr, y = sig.lab + 35, group = Hurricane,
+  #               label=c('a', 'a', 'ab', 'ac'), ), 
+  #           position=position_dodge(0.9), size = 3.5) + 
+  annotate("text", x = 2.15, y = 59.5, label = "p=0.109", size = 3.5) +
+  ylim(0, 60) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+
+cpuenp.aov.23
+```
+
+### CPUE - LR Season
+#### CPUE-LR Season: mBACI Bargraph and ANOVA
+ANOVA with fourth root transformation
+```{r}
+# look at histogram of data distn
+hist(envspp.dum.maj.sg$cpue.np.dist.100m)
+hist(log(envspp.dum.maj.sg$cpue.np.dist.100m+1))
+hist((envspp.dum.maj.sg$cpue.np.dist.100m)^(1/4))  # fourth root is most normally dist
+
+# #Look at variances of the groups  -- fourth rooth transforming does meets variance 1.5 rule
+envspp.dum.maj.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean((cpue.np.dist.100m)^(1/4), na.rm = TRUE),
+                   sd = sd((cpue.np.dist.100m)^(1/4), na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop')
+
+# check outliers
+performance::check_outliers(aov(cpue.np.dist.100m^(1/4) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+##  Test for homogeneity of variances -- nothing passes as there is definitely more variance in before data
+# levene_test((cpue.np.dist.100m^(1/4)) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg, center = 'median') # fails
+# fligner.test(cpue.np.dist.100m^(1/4) ~ Hur_pp, data = envspp.dum.maj.sg) # fails
+
+# test for normality -- after data passes. Hur/before is close.
+by((envspp.dum.maj.sg$cpue.np.dist.100m^(1/4)), envspp.dum.maj.sg$Hur_pp, shapiro.test)
+# plot the ANOVA, and the QQ plot looks normal-esque,but there's definitely more variance in whatever the last grp is
+plot(aov((cpue.np.dist.100m^(1/4)) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+
+
+# run the ANOVA test on fourth root transformed data since nothing passes regardless. Use this for comparison with the short term data
+summary(aov(cpue.np.dist.100m^(1/4) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))  #  signif
+# post hoc tests
+TukeyHSD(aov(cpue.np.dist.100m^(1/4) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))  # only hurricane before vs hurricane after
+plot(aov((cpue.np.dist.100m^(1/4)) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+
+```
+
+CPUE-LR Season: mBACI Bargraph 
+```{r}
+cpuenp.aov.yr <- envspp.dum.maj.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(cpue.np.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.np.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop') %>%
+  ggplot(aes(x = factor(Prepost_fctr, level = c('Before', 'After')), y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('') +
+  ylab(bquote('CPUE-Lr (100' *m^-1*')')) +
+  # ggtitle('with Pinfish') +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_fill_manual(values = twocolors, labels = c("No Storm", "Hurricane")) +
+  # geom_text(aes(x=Prepost_fctr, y = sig.lab + 35, group = Hurricane,
+  #               label=c('a', 'b', 'a', 'b')), # kruskal letters
+  #           position=position_dodge(0.9), size = 3.5) + 
+  ylim(0, 60) +
+  annotate("text", x = 2.15, y = 59.5, label = "p=0.009", size = 3.5) +
+  stoopidtheme 
+  # theme(legend.position = c(0.9, 0.9))
+
+cpuenp.aov.yr
+```
+
+#### CPUE-LR Season: mBACI GAMs
+CPUE-LR Season mBACI: Get the predictions
+```{r}
+## 1. make the dataframe to be predicted over
+# before dates
+b4dat <- expand.grid(Prepost_num = seq(-119, 0, length = 120),
+                     Hur_pp = c('No Storm_Before', 'Hurricane_Before'))
+# after dates
+afdat <- expand.grid(Prepost_num = seq(0, 80, length = 120),
+                     Hur_pp = c('No Storm_After', 'Hurricane_After'))
+pdat <- rbind(b4dat, afdat)  # bind them together
+
+## 2. the model
+# this is only hinged on days to storm
+mod <- envspp.dum.maj.sg %>% 
+  group_by(Hur_pp) %>% 
+  do(model = gam(cpue.np.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .))
+
+## get the inverse family link function
+ilink.cb <- mod[[2]][[1]][["family"]][["linkinv"]]
+ilink.ib <- mod[[2]][[2]][["family"]][["linkinv"]]
+ilink.ca <- mod[[2]][[3]][["family"]][["linkinv"]]
+ilink.ia <- mod[[2]][[4]][["family"]][["linkinv"]]
+
+
+## 3. Run the model on all BACI elements (grouped by Hur_pp) and append it to the envspp.dum.maj.sg data
+# this runs a separate model for each level of Hur_pp
+# then calcualte the differences between impact vs control groups
+cpue.np.pred <- pdat %>%
+  group_by(Hur_pp) %>%
+  nest %>%
+  inner_join(mod) %>%
+  mutate(preds = map2(model, data, 
+                      ~as.data.frame(predict(.x, .y, se.fit = TRUE)))) %>%
+  unnest(cols = c(preds, data)) 
+  
+  
+## 4. Calculate the fit on the response scale and get the 
+# long way of doing this bc i just cant figure it out
+cpue.np.pred <- cpue.np.pred %>%
+  mutate(resp_fit = c(ilink.cb(fit[Hur_pp == 'No Storm_Before']),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After']),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before']),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'])),
+         resp_upr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] + (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] + (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] + (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] + (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         resp_lwr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] - (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] - (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] - (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] - (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         se.upr = (resp_upr - resp_fit),
+         se.lwr = (resp_fit - resp_lwr)) %>%
+  separate(Hur_pp, c("Hurricane", 'Prepost_fctr'), sep = '_', remove = FALSE) %>%
+  group_by(Prepost_num, Prepost_fctr) %>%
+  mutate(diff = resp_fit[Hurricane == 'No Storm'] - resp_fit) %>%
+  mutate(upr.diff = diff + (1.96 * sqrt((se.upr[Hurricane == 'No Storm'])^2 + se.upr^2))) %>%
+  mutate(lwr.diff = diff - (1.96 * sqrt(se.lwr[Hurricane == 'No Storm']^2 + se.lwr^2)))
+```
+
+CPUE-LR Season mBACI: Plot the predicted smooth (not the ggplot smooth) 
+```{r}
+cpue.np.scat.yr.c <- ggplot() +
+  geom_point(data = envspp.dum.maj.sg, 
+             aes(x = Prepost_num, y = cpue.np.dist.100m, 
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp), 
+               size = 2, position = position_dodge(0.5)) +
+  geom_line(data = cpue.np.pred, aes(x = Prepost_num, y = resp_fit, group = Hur_pp, linetype = Hur_pp, color = Hur_pp)) +
+  geom_ribbon(data = cpue.np.pred, aes(x = Prepost_num, ymin = resp_lwr, ymax = resp_upr, group = Hur_pp, fill = Hur_pp), alpha = 0.5, color = NA) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    xlab('Days to Storm') +
+    ylab(bquote('CPUE-Lr (100' *m^-1*')')) +
+    stoopidtheme +
+    theme(legend.position = c(0.8, 0.85))
+
+cpue.np.scat.yr.c
+```
+
+CPUE-LR Season mBACI: Plot the difference between smooths
+```{r}
+## 4. plot the difference smooths with errors
+dif.cpue.np.p1 <- cpue.np.pred %>%
+  group_by(Prepost_num) %>%
+  filter(!Hurricane == 'No Storm') %>%
+  ggplot(aes(x=Prepost_num, y = diff, 
+             group = Prepost_fctr, color = Prepost_fctr, 
+             linetype = Prepost_fctr)) +
+    geom_ribbon(aes(ymin = lwr.diff, ymax = upr.diff), alpha = 0.3, color = NA) +
+    # geom_point()
+    # geom_line() +
+    geom_smooth() +
+    scale_linetype_manual(values = c(c('dashed', 'solid'), twocolors), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    scale_color_manual(values = c('#6082B6', '#6082B6'), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    ylab('Difference') +
+    xlab('Days Since Storm') +
+    stoopidtheme +
+    theme(legend.position = c(0.9, 0.9))
+dif.cpue.np.p1
+
+## plot the scatter plot with BACI lines over top of the difference between smooths
+# if the smooths (incl error) overlaps zero, then these trends are not different
+ggarrange(cpue.np.scat.yr.c, dif.cpue.np.p1, ncol = 1)
+
+```
+
+CPUE-Lr Season: Look at model diagnostics
+```{r, warning=FALSE}
+# run with  Prepost_num as the only explanatory variable
+envspp.dum.maj.sg %>% 
+      group_by(Hur_pp) %>%
+      do({model = gam(cpue.np.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .)    # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+```
+
+#### CPUE-LR Figures
+CPUE-Lr Immediatea nd Seasonal figures (for Seminar)
+```{r}
+ggarrange(cpuenp.aov.23 + rremove("xlab") + rremove("x.text") + rremove("x.ticks"), 
+          cpue.np.scat.yr.c + rremove("xlab") + rremove("x.text") + rremove("x.ticks"),
+          cpuenp.aov.yr, 
+          dif.cpue.np.p1, 
+          nrow = 2, ncol = 2, 
+          labels = c('A', 'C', 'B', 'D'), align = 'hv')
+
+```
+
+
+
+## Richness mBACI
+### Short-term Richness mBACI
+#### Short-term mBACI Richness Bargraph and ANOVA
+Short-term Richness mBACI: ANOVA stats
+```{r}
+##  Test for assumptions
+levene_test(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg)  # passes w/o transformation
+by(envspp.dum.maj.23.sg$N0, envspp.dum.maj.23.sg$Hur_pp, shapiro.test)
+
+# run the ANOVA test on untransformed data
+summary(aov(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))  # not signif
+# post hoc tests
+TukeyHSD(aov(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))  # only hurricane before vs hurricane after
+plot(aov((N0) ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.23.sg))
+
+rich.box.23 <- ggboxplot(envspp.dum.maj.23.sg, x = "Hur_pp", y = "N0", notch = TRUE,
+                         order = c('No Storm_Before', 'Hurricane_Before', 'No Storm_After', 'Hurricane_After'))
+```
+
+Short-term Richness mBACI: Bargraph
+```{r}
+rich.aov.23 <- envspp.dum.maj.23.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(N0, na.rm = TRUE),
+                   sd = sd(N0, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop') %>%
+  ggplot(aes(x = factor(Prepost_fctr, level = c('Before', 'After')), y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Short-term') +
+  ylab(bquote('Richness')) +
+  # ylim(0, 10) +
+  scale_y_continuous(breaks = seq(0,10, by = 3)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_fill_manual(values = twocolors, labels = c("Control", "Impact")) +
+  # geom_text(aes(x=Prepost_fctr, y = sig.lab + 0.7, group = Hurricane,
+  #               label=c('a', 'ac', 'b', 'abc')), size = 3.5,
+  #           position=position_dodge(0.9)) + 
+  annotate("text", x = 2.15, y = 9.9, label = "p=0.087", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.82, 0.9),
+        legend.direction = 'horizontal')
+
+rich.aov.23
+
+```
+
+
+### Seasonal Richness mBACI
+#### Seasonal Richness mBACI ANOVA and Bargraph
+Seasonal Richness mBACI: ANOVA stats
+```{r}
+# look at histogram of data distn
+hist(envspp.dum.maj.sg$N0)  # untransformed data slightly left skewed but pretty normal
+hist(log(envspp.dum.maj.sg$N0+1))  # bimodal
+hist((envspp.dum.maj.sg$N0)^(1/4)) # bimodal
+
+# #Look at variances of the groups  -- no need to transform to meet 1.5 rule
+envspp.dum.maj.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean((N0), na.rm = TRUE),
+                   sd = sd((N0), na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop')
+
+# check outliers
+performance::check_outliers(aov(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+##  Test for homogeneity of variances -- nothing passes as there is definitely more variance in before data
+# levene_test(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg, center = 'median') # fails p = 0.032
+# fligner.test(N0 ~ Hur_pp, data = envspp.dum.maj.sg) # fails p = 0.027
+
+# test for normality - all fail
+by(envspp.dum.maj.sg$N0, envspp.dum.maj.sg$Hur_pp, shapiro.test)
+# plot the ANOVA, and the QQ plot looks normal-esque
+plot(aov(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))
+
+
+# run the ANOVA test on untransformed data
+summary(aov(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))  #  signif
+# post hoc tests
+TukeyHSD(aov(N0 ~ Prepost_fctr * Hurricane, data = envspp.dum.maj.sg))  # no individ pair is signif?
+
+```
+
+Seasonal Richness mBACI: Bargraph
+```{r}
+rich.aov.yr <- envspp.dum.maj.sg %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  summarise(tibble(n = n(),
+                   mean = mean(N0, na.rm = TRUE),
+                   med = median(N0, na.rm = TRUE),
+                   sd = sd(N0, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se),
+            .groups = 'drop') %>%
+  ggplot(aes(x = factor(Prepost_fctr, level = c('Before', 'After')), y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Seasonal') +
+  ylab(bquote('Richness')) +
+  # ylim(0, 10) +
+  scale_y_continuous(breaks = seq(0,10, by = 3)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_fill_manual(values = twocolors, labels = c("Control", "Impact")) +
+  # geom_text(aes(x=Prepost_fctr, y = sig.lab + 0.7, group = Hurricane,
+  #               label=c('a', 'a', 'a', 'a')), size = 3.5,
+  #           position=position_dodge(0.9)) + 
+  annotate("text", x = 2.15, y = 9.9, label = "p=0.046", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.82, 0.9))
+
+rich.aov.yr
+```
+
+#### Seasonal Richness mBACI GAM
+Seasonal Richness mBACI GAM: Get the predictions
+```{r}
+## 1. make the dataframe to be predicted over
+# before dates
+b4dat <- expand.grid(Prepost_num = seq(-119, 0, length = 120),
+                     Hur_pp = c('No Storm_Before', 'Hurricane_Before'))
+# after dates
+afdat <- expand.grid(Prepost_num = seq(0, 80, length = 120),
+                     Hur_pp = c('No Storm_After', 'Hurricane_After'))
+pdat <- rbind(b4dat, afdat)  # bind them together
+
+## 2. the model
+# this is only hinged on days to storm
+mod <- envspp.dum.maj.sg %>% 
+  group_by(Hur_pp) %>% 
+  do(model = gam(N0 ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .))
+## get the inverse family link function to back calculate the errors and values on the response scale
+ilink.cb <- mod[[2]][[1]][["family"]][["linkinv"]]
+ilink.ib <- mod[[2]][[2]][["family"]][["linkinv"]]
+ilink.ca <- mod[[2]][[3]][["family"]][["linkinv"]]
+ilink.ia <- mod[[2]][[4]][["family"]][["linkinv"]]
+
+## 3. Run the model on all BACI elements (grouped by Hur_pp) and append it to the envspp.dum.maj.sg data
+# this runs a separate model for each level of Hur_pp
+# then calcualte the differences between impact vs control groups
+rich.pred <- pdat %>%
+  group_by(Hur_pp) %>%
+  nest %>%
+  inner_join(mod) %>%
+  mutate(preds = map2(model, data, 
+                      ~as.data.frame(predict(.x, .y, se.fit = TRUE)))) %>%
+  unnest(cols = c(preds, data))
+
+
+  
+  
+## 4. Calculate the fit on the response scale and get the 
+# long way of doing this bc i just cant figure it out
+rich.pred <- rich.pred %>%
+  mutate(resp_fit = c(ilink.cb(fit[Hur_pp == 'No Storm_Before']),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After']),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before']),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'])),
+         resp_upr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] + (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] + (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] + (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] + (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         resp_lwr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] - (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] - (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] - (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] - (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         se.upr = (resp_upr - resp_fit),
+         se.lwr = (resp_fit-resp_lwr)) %>%
+  separate(Hur_pp, c("Hurricane", 'Prepost_fctr'), sep = '_', remove = FALSE) %>%
+  group_by(Prepost_num, Prepost_fctr) %>%
+  mutate(diff = resp_fit[Hurricane == 'No Storm'] - resp_fit) %>%
+  mutate(upr.diff = diff + (1.96 * sqrt((se.upr[Hurricane == 'No Storm'])^2 + se.upr^2))) %>%
+  mutate(lwr.diff = diff - (1.96 * sqrt(se.lwr[Hurricane == 'No Storm']^2 + se.lwr^2)))  
+```
+
+Seasonal Richness mBACI GAM: Plot the predicted smooth (not the ggplot smooth) 
+```{r}
+rich.scat.yr.c <- ggplot() +
+  geom_point(data = envspp.dum.maj.sg, 
+             aes(x = Prepost_num, y = N0, 
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp), 
+               size = 2, position = position_dodge(0.5)) +
+  geom_line(data = rich.pred, aes(x = Prepost_num, y = resp_fit, group = Hur_pp, linetype = Hur_pp, color = Hur_pp)) +
+  geom_ribbon(data = rich.pred, aes(x = Prepost_num, ymin = resp_lwr, ymax = resp_upr, group = Hur_pp, fill = Hur_pp), alpha = 0.5, color = NA) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    xlab('Days Since Storm') +
+    ylab(bquote('Richness')) +
+    xlim(-130, 110) +
+    stoopidtheme +
+    theme(legend.position = c(0.85, 0.85))
+
+rich.scat.yr.c
+```
+
+Seasonal Richness mBACI GAM: Plot the difference smooths with errors
+```{r}
+dif.rich.p1 <- rich.pred %>%
+  group_by(Prepost_num) %>%
+  filter(!Hurricane == 'No Storm') %>%
+  ggplot(aes(x=Prepost_num, y = diff, 
+             group = Prepost_fctr, color = Prepost_fctr, 
+             linetype = Prepost_fctr)) +
+    geom_ribbon(aes(ymin = lwr.diff, ymax = upr.diff), alpha = 0.3, color = NA) +
+    # geom_point()
+    # geom_line() +
+    geom_smooth() +
+    scale_linetype_manual(values = c(c('dashed', 'solid'), twocolors), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    scale_color_manual(values = c('#6082B6', '#6082B6'), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    ylab('Difference') +
+    xlab('Days Since Storm') +
+    stoopidtheme +
+    theme(legend.position = c(0.9, 0.95))
+dif.rich.p1
+
+## plot the scatter plot with BACI lines over top of the difference between smooths
+# if the smooths (incl error) overlaps zero, then these trends are not different
+ggarrange(rich.scat.yr.c, dif.rich.p1, ncol = 1)
+
+```
+
+Richness Season: Look at model diagnostics
+```{r, warning=FALSE}
+# run with  Prepost_num as the only explanatory variable
+envspp.dum.maj.sg %>% 
+      group_by(Hur_pp) %>%
+      do({model = gam(N0 ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .)    # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+```
+
+
+#### All Richness mBACI graphs
+```{r}
+ggarrange(rich.aov.23 + rremove("xlab") + rremove("x.text") + rremove("x.ticks"), 
+          rich.scat.yr.c + rremove("xlab") + rremove("x.text") + rremove("x.ticks"),
+          rich.aov.yr, 
+          dif.rich.p1, 
+          nrow = 2, ncol = 2, 
+          labels = c('A', 'C', 'B', 'D'), align = 'hv')
+
+```
+
+
+## All mBACI graphs combined for figure 2
+Figure 2 for MS
+```{r}
+# Col 1 = Short term bar graphs
+# Col 2 = Seasonal bar graphs 
+# Col 3 = Seasonal Scatterplots 
+# Col 4 = Seasonal difference in trends
+
+# Row 1 = CPUE
+# Row 2 = CPUE-Lr
+# Row 3 = Species Richness
+
+msfig2 <- ggarrange(cpue.aov.23 + rremove('xlab'), cpue.aov.yr + rremove('xlab') + rremove('ylab'), cpue.scat.yr.c + rremove('xlab')  + rremove('ylab'), dif.cpue.p1 + rremove('xlab'),
+          cpuenp.aov.23 + rremove('xlab'), cpuenp.aov.yr + rremove('xlab') + rremove('ylab'), cpue.np.scat.yr.c + rremove('xlab') + rremove('ylab'), dif.cpue.np.p1 + rremove('xlab'), 
+          rich.aov.23, rich.aov.yr + rremove('ylab'), rich.scat.yr.c + rremove('ylab'), dif.rich.p1, 
+          labels = 'AUTO', align = 'hv', legend = 'none', 
+          ncol = 4, nrow = 3)
+
+```
+
+Export Figure 2
+```{r, eval = FALSE}
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/tiffs/Fig2.tiff",
+#        plot = last_plot(), device = 'tiff',
+#        width = 10, height = 6, units = "in", dpi = 300)
+
+```
+
+
+# BACI: Off-Season Graphs and Analysis
+## BACI Arthur (2014) vs 2015
+July data
+```{r}
+art <- envspp.dum %>%
+  dplyr::filter(Year %in% c(2013, 2015, 2017, 2014)) %>%
+  dplyr::select(-c(Stormdate, Prepost_num, Prepost_fctr)) %>%
+  mutate(Stormdate = recode(Year, 
+         "2013" = "2013-07-04",
+         "2014" = "2014-07-04", # Arthur
+         "2015" = "2015-07-04",
+         "2017" = "2017-07-04")) %>%
+  mutate(Stormdate = ymd(Stormdate)) %>%
+  mutate(Prepost_num = as.integer(yday(Date) - yday(Stormdate))) %>%
+  mutate(Prepost_fctr = ifelse(Prepost_num < 0, 'Before', 'After')) %>%
+  mutate(Prepost_fctr = ordered(Prepost_fctr, levels = c('Before', 'After'))) %>%
+  unite('Hur_pp', Hurricane, Prepost_fctr, sep = '_', remove = FALSE) %>%
+  mutate(Hur_pp = as.factor(Hur_pp)) %>%
+  # mutate(Hur_pp = ordered(Hur_pp, levels = c('No Storm_Before', 'No Storm_After', 'Hurricane_Before', 'Hurricane_After'))) %>%
+  mutate(oHur = ordered(Hurricane, levels = c('0', '1')))
+
+art.sg <- art %>%
+  filter(Habitat == 'seagrass')
+
+# art.sg %>%
+#   dplyr::filter(between(as.integer(Prepost_num), -23, 23)) %>%
+#   count(Year)
+
+art.23.sg <- art.sg %>%
+  dplyr::filter(between(as.integer(Prepost_num), -23, 23))
+
+# look at at sample breakdown  - dont use 2013 bc there were sooo many more trawls
+art.23.sg %>%
+  count(Year, Prepost_fctr)
+
+art.sg %>%
+  count(Year, Prepost_fctr)
+
+```
+
+### Arthur BACI: CPUE
+Proceed with Arthur (2014) against 2015 for  CPUE
+
+####  Arthur CPUE Short term
+Short-term Arthur CPUE Bargraph and ANOVA
+```{r}
+# No dif bw '14 (Arthur) and '15 for cpue.dist.100m
+art.23.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  aov(cpue.dist.100m^(1/2) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # no differences
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  # no differences across groups
+
+
+# CPUE 
+art.15.pbar.cpue <- art.23.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(cpue.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Short-term') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('2014 (Arthur) v. 2015') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("Control", 'Impact')) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 400, group = Hurricane, label=c('a', 'a', 'a', 'a'), ), position=position_dodge(0.9)) +
+  ylim(0 , 800) +
+  annotate("text", x = 2.15, y = 800, label = "p=0.210", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+
+art.15.pbar.cpue
+```
+
+#### Arthur Seasonal CPUE
+##### Bargraph and ANOVA Arthur seasonal
+Seasonal Arthur CPUE Bargraph and ANOVA
+```{r}
+# CPUE 
+art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  aov(cpue.dist.100m^(1/2) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # interaction is not signif but indivd factors are
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  
+
+art.pbar.cpue <- art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(cpue.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Seasonal') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('2014 (Arthur) v. 2015') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("Control", 'Impact')) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 500, group = Hurricane, label=c('a', 'b', 'a', 'b'), ), position=position_dodge(0.9)) +
+  ylim(0 , 800) +
+  annotate("text", x = 2.15, y = 800, label = "p=0.614", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+```
+
+##### Arthur seasonal GAMs
+CPUE scatterplot for Arthur - Whole season
+```{r}
+# can't do 23 days bc only samples on two days before and 1 day after in control years.
+art.sg %>%
+  filter(between(as.integer(Prepost_num), -23, 23)) %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  count(Hur_pp, Prepost_num)
+
+## Whole Season
+art.yr.scat.cpue <- art.sg %>%
+  # filter(between(as.integer(Prepost_num), -23, 23)) %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  ggplot(aes(x = Prepost_num, y = as.integer(cpue.dist.100m),
+             group = (Hur_pp),
+              fill = (Hur_pp),
+              col = (Hur_pp),
+              shape = (Hur_pp),
+              linetype = (Hur_pp)))  +
+    geom_point(aes(shape = (Hur_pp), color = (Hur_pp) ), 
+               size = 2, position = position_dodge(0.5)) +
+    # geom_smooth(method = "gam", method.args = list(family = "nb"),
+              # formula = y ~ s(x, k = 3), se = TRUE) +
+    geom_smooth(method = 'glm.nb', se = TRUE) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    xlab('Days to Storm') +
+    ylab(bquote('CPUE (100' *m^-1*')')) +
+    stoopidtheme +
+    theme(legend.position = c(0.8, 0.85))
+
+```
+
+Get the Predictions
+```{r}
+## 1. make the dataframe to be predicted over
+art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  count(Prepost_num)
+# before dates
+b4dat <- expand.grid(Prepost_num = seq(-46, 0, length = 120),
+                     Hur_pp = c('No Storm_Before', 'Hurricane_Before'))
+# after dates
+afdat <- expand.grid(Prepost_num = seq(0, 115, length = 120),
+                     Hur_pp = c('No Storm_After', 'Hurricane_After'))
+pdat <- rbind(b4dat, afdat)  # bind them together
+
+## 2. the model (whole season gam)
+# # this is only hinged on days to storm
+mod <-  art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hur_pp) %>%
+  do(model = gam(cpue.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .))
+
+# # test with glm instead of gam
+# mod <- art.sg %>%
+#   filter(Year == '2014' | Year == '2015') %>%
+#   group_by(Hur_pp) %>%
+#   do(model = glm.nb(cpue.dist.100m ~ Prepost_num, data = .))
+
+## get the inverse family link function to back calculate the errors and values on the response scale
+ilink.cb <- mod[[2]][[1]][["family"]][["linkinv"]]
+ilink.ib <- mod[[2]][[2]][["family"]][["linkinv"]]
+ilink.ca <- mod[[2]][[3]][["family"]][["linkinv"]]
+ilink.ia <- mod[[2]][[4]][["family"]][["linkinv"]]
+
+## 3. Run the model on all BACI elements (grouped by Hur_pp) and append it to the envspp.dum.maj.sg data
+# this runs a separate model for each level of Hur_pp
+# then calcualte the differences between impact vs control groups
+cpue.art.pred <- pdat %>%
+  group_by(Hur_pp) %>%
+  nest %>%
+  inner_join(mod) %>%
+  mutate(preds = map2(model, data, 
+                      ~as.data.frame(predict(.x, .y, se.fit = TRUE)))) %>%
+  unnest(cols = c(preds, data))
+
+
+  
+  
+## 4. Calculate the fit on the response scale and get the 
+# long way of doing this bc i just cant figure it out
+cpue.art.pred <- cpue.art.pred %>%
+  mutate(resp_fit = c(ilink.cb(fit[Hur_pp == 'No Storm_Before']),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After']),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before']),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'])),
+         resp_upr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] + (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] + (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] + (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] + (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         resp_lwr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] - (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] - (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] - (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] - (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         se.upr = (resp_upr - resp_fit),
+         se.lwr = (resp_fit-resp_lwr)) %>%
+  separate(Hur_pp, c("Hurricane", 'Prepost_fctr'), sep = '_', remove = FALSE) %>%
+  group_by(Prepost_num, Prepost_fctr) %>%
+  mutate(diff = resp_fit[Hurricane == 'No Storm'] - resp_fit) %>%
+  mutate(upr.diff = diff + (1.96 * sqrt((se.upr[Hurricane == 'No Storm'])^2 + se.upr^2))) %>%
+  mutate(lwr.diff = diff - (1.96 * sqrt(se.lwr[Hurricane == 'No Storm']^2 + se.lwr^2)))  
+
+```
+
+Plot the predicted smooth for Arthur season
+```{r}
+# subset the data to only 2014 and 2015
+art.sg.15 <- art.sg %>%
+  filter(Year == 2014 | Year  == 2015)
+
+# plot the predicted smooth
+art.cpue.p3 <- ggplot() +
+  geom_point(data = art.sg.15, 
+             aes(x = Prepost_num, y = cpue.dist.100m,
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp),
+             size = 2, position = position_dodge(0.5)) +
+  geom_line(data = cpue.art.pred, aes(x = Prepost_num, y = resp_fit, group = Hur_pp, linetype = Hur_pp, color = Hur_pp)) +
+  geom_ribbon(data = cpue.art.pred, aes(x = Prepost_num, ymin = resp_lwr, ymax = resp_upr, group = Hur_pp, fill = Hur_pp), alpha = 0.5, color = NA) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    xlab('Days Since Storm') +
+    ylab(bquote('CPUE (100' *m^-1*')')) +
+    stoopidtheme + 
+    guides(fill = guide_legend(ncol = 2))
+    # theme(legend.position = c(0.8, 0.85))
+
+```
+
+Plot the difference smooths with errors- Arthur
+```{r}
+## 4. plot the difference smooths with errors
+dif.art.cpue.p1 <- cpue.art.pred %>%
+  group_by(Prepost_num) %>%
+  filter(!Hurricane == 'No Storm') %>%
+  ggplot(aes(x=Prepost_num, y = diff, 
+             group = Prepost_fctr, color = Prepost_fctr, 
+             linetype = Prepost_fctr)) +
+    geom_ribbon(aes(ymin = lwr.diff, ymax = upr.diff), alpha = 0.3, color = NA) +
+    # geom_point()
+    # geom_line() +
+    geom_smooth() +
+    scale_linetype_manual(values = c(c('dashed', 'solid'), twocolors), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    scale_color_manual(values = c('#6082B6', '#6082B6'), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    ylab('Difference') +
+    xlab('Days Since Storm') +
+    stoopidtheme +
+    theme(legend.position = c(0.9, 0.9))
+dif.art.cpue.p1
+```
+
+
+Arthur CPUE Season: Look at model diagnostics
+```{r, warning=FALSE}
+# run with  Prepost_num as the only explanatory variable
+
+### Test the GAM Model fit
+art.sg.15 %>% 
+      group_by(Hur_pp) %>%
+      do({model = gam(cpue.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .)    # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+### Test with GLM Model fit
+art.sg.15 %>% 
+      group_by(Hur_pp) %>%
+      do({model = glm.nb(cpue.dist.100m ~ Prepost_num, data = .)   # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+```
+
+Arthur vs 2015 all CPUE graphs
+```{r}
+## plot the scatter plot with BACI lines over top of the difference between smooths
+# if the smooths (incl error) overlaps zero, then these trends are not different
+ggarrange(art.15.pbar.cpue, art.pbar.cpue, art.cpue.p3, dif.art.cpue.p1, ncol = 1)
+
+```
+
+
+### Arthur BACI CPUE-Lr
+Proceed with Arthur (2014) against 2015
+#### Short-term Arthur CPUE-Lr
+Bargraphs and ANOVA
+```{r}
+# No dif bw '14 (Arthur) and '15 for cpue.np.dist.100m
+art.23.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  aov(cpue.np.dist.100m^(1/2) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary(.)
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  # after periods are different
+
+# cpue.np - no pinfish
+art.15.pbar.npcpue <- art.23.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(cpue.np.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.np.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Short-term') +
+  ylab(bquote('CPUE-Lr (100' *m^-1*')')) +
+  # ggtitle('2014 (Arthur) v. 2015') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("No Storm", 'Impact')) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 50, group = Hurricane, label=c('ab', 'a', 'ab', 'b'), ), position=position_dodge(0.9)) +
+  ylim(0, 155) +
+  annotate("text", x = 2.15, y = 150, label = "p=0.271", size = 3.5) +
+  stoopidtheme
+  # theme(legend.position = c(0.9, 0.9))
+```
+
+#### Seasonal Arthur CPUE-Lr BACI
+##### Seasonal Arthur CPUE-Lr BACI Bargraphs and ANOVA
+```{r}
+# CPUE - Lr
+art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  aov(cpue.np.dist.100m^(1/2) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # no differences
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  
+
+
+# CPUE - no pinfish
+art.pbar.npcpue <- art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(cpue.np.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.np.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  # xlab('Hurricane') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('2014 (Arthur) v. 2015') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("Control", "Impact")) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 90, group = Hurricane, label=c('a', 'c', 'b', 'a'), ), position=position_dodge(0.9)) +
+  ylim(0, 155) +
+  annotate("text", x = 2.15, y = 150, label = "p=0.068", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+```
+
+##### Seasonal Arthur CPUE-Lr GAMs
+Seasonal CPUE-Lr scatterplot for Arthur
+```{r}
+# can't do 23 days bc only samples on two days before and 1 day after in control years.
+# art.sg %>%
+#   filter(between(as.integer(Prepost_num), -23, 23)) %>%
+#   filter(Year == '2014' | Year == '2015') %>%
+#   count(Hur_pp, Prepost_num)
+
+## Whole Season
+art.yr.scat.cpue.np <- art.sg %>%
+  # filter(between(as.integer(Prepost_num), -23, 23)) %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  ggplot(aes(x = Prepost_num, y = as.integer(cpue.np.dist.100m),
+             group = (Hur_pp),
+              fill = (Hur_pp),
+              col = (Hur_pp),
+              shape = (Hur_pp),
+              linetype = (Hur_pp)))  +
+    geom_point(aes(shape = (Hur_pp), color = (Hur_pp) ), 
+               size = 2, position = position_dodge(0.5)) +
+    # geom_smooth(method = "gam", method.args = list(family = "nb"),
+    #           formula = y ~ s(x, k = 3), se = TRUE) +
+    geom_smooth(method = 'glm.nb', se = TRUE) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('No Storm:Before', 'Hurricane:Before', 
+                                 'No Storm:After', 'Hurricane:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('No Storm:Before', 'Hurricane:Before', 
+                                 'No Storm:After', 'Hurricane:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('No Storm:Before', 'Hurricane:Before', 
+                                 'No Storm:After', 'Hurricane:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('No Storm:Before', 'Hurricane:Before', 
+                                 'No Storm:After', 'Hurricane:After')) +
+    xlab('Days to Storm') +
+    ylab(bquote('CPUE-Lr (100' *m^-1*')')) +
+    stoopidtheme +
+    theme(legend.position = c(0.8, 0.85))
+
+```
+
+Predictions for cpue-lr for arthur - Whole season from glm.nb
+```{r}
+## 1. make the dataframe to be predicted over
+# art.sg %>%
+#   filter(Year == '2014' | Year == '2015') %>%
+#   count(Prepost_num)
+# before dates
+b4dat <- expand.grid(Prepost_num = seq(-46, 0, length = 120),
+                     Hur_pp = c('No Storm_Before', 'Hurricane_Before'))
+# after dates
+afdat <- expand.grid(Prepost_num = seq(0, 115, length = 120),
+                     Hur_pp = c('No Storm_After', 'Hurricane_After'))
+pdat <- rbind(b4dat, afdat)  # bind them together
+
+## 2. the model (whole season gam)
+# this is only hinged on days to storm
+# mod <-  art.sg %>%
+#   filter(Year == '2014' | Year == '2015') %>%
+#   group_by(Hur_pp) %>% 
+#   do(model = gam(cpue.np.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+#                  select = TRUE,
+#                  method = 'REML',
+#                  family = nb(link = 'log'),
+#                  data = .))
+
+# # test with glm instead of gam
+mod <- art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hur_pp) %>%
+  do(model = glm.nb(cpue.np.dist.100m ~ Prepost_num, data = .))
+
+## get the inverse family link function to back calculate the errors and values on the response scale
+ilink.cb <- mod[[2]][[1]][["family"]][["linkinv"]]
+ilink.ib <- mod[[2]][[2]][["family"]][["linkinv"]]
+ilink.ca <- mod[[2]][[3]][["family"]][["linkinv"]]
+ilink.ia <- mod[[2]][[4]][["family"]][["linkinv"]]
+
+## 3. Run the model on all BACI elements (grouped by Hur_pp) and append it to the envspp.dum.maj.sg data
+# this runs a separate model for each level of Hur_pp
+# then calcualte the differences between impact vs control groups
+cpue.np.art.pred <- pdat %>%
+  group_by(Hur_pp) %>%
+  nest %>%
+  inner_join(mod) %>%
+  mutate(preds = map2(model, data, 
+                      ~as.data.frame(predict(.x, .y, se.fit = TRUE)))) %>%
+  unnest(cols = c(preds, data))
+
+
+  
+  
+## 4. Calculate the fit on the response scale and get the 
+# long way of doing this bc i just cant figure it out
+cpue.np.art.pred <- cpue.np.art.pred %>%
+  mutate(resp_fit = c(ilink.cb(fit[Hur_pp == 'No Storm_Before']),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After']),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before']),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'])),
+         resp_upr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] + (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] + (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] + (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] + (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         resp_lwr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] - (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] - (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] - (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] - (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         se.upr = (resp_upr - resp_fit),
+         se.lwr = (resp_fit-resp_lwr)) %>%
+  separate(Hur_pp, c("Hurricane", 'Prepost_fctr'), sep = '_', remove = FALSE) %>%
+  group_by(Prepost_num, Prepost_fctr) %>%
+  mutate(diff = resp_fit[Hurricane == 'No Storm'] - resp_fit) %>%
+  mutate(upr.diff = diff + (1.96 * sqrt((se.upr[Hurricane == 'No Storm'])^2 + se.upr^2))) %>%
+  mutate(lwr.diff = diff - (1.96 * sqrt(se.lwr[Hurricane == 'No Storm']^2 + se.lwr^2)))  
+
+```
+
+Arthur CPUE-Lr: Plot the predicted smooth 
+```{r}
+# art.sg.15 <- art.sg %>%
+#   filter(Year == 2014 | Year  == 2015) 
+  
+art.cpue.np.p3 <- ggplot() +
+  geom_point(data = art.sg.15, 
+             aes(x = Prepost_num, y = cpue.np.dist.100m,
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp),
+             size = 2, position = position_dodge(0.5)) +
+  geom_line(data = cpue.np.art.pred, aes(x = Prepost_num, y = resp_fit, group = Hur_pp, linetype = Hur_pp, color = Hur_pp)) +
+  geom_ribbon(data = cpue.np.art.pred, aes(x = Prepost_num, ymin = resp_lwr, ymax = resp_upr, group = Hur_pp, fill = Hur_pp), alpha = 0.5, color = NA) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    xlab('Days Since Storm') +
+    ylab(bquote('CPUE-Lr (100' *m^-1*')')) +
+    stoopidtheme +
+    theme(legend.position = c(0.8, 0.85)) +
+  guides(fill = guide_legend(ncol = 2))
+art.cpue.np.p3
+```
+
+Seasonal Arthur CPUE-Lr BACI: Plot the difference smooths with errors
+```{r}
+## 4. plot the difference smooths with errors
+dif.art.cpue.np.p1 <- cpue.np.art.pred %>%
+  group_by(Prepost_num) %>%
+  filter(!Hurricane == 'No Storm') %>%
+  ggplot(aes(x=Prepost_num, y = diff, 
+             group = Prepost_fctr, color = Prepost_fctr, 
+             linetype = Prepost_fctr)) +
+    geom_ribbon(aes(ymin = lwr.diff, ymax = upr.diff), alpha = 0.3, color = NA) +
+    # geom_point()
+    # geom_line() +
+    geom_smooth() +
+    scale_linetype_manual(values = c(c('dashed', 'solid'), twocolors), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    scale_color_manual(values = c('#6082B6', '#6082B6'), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    ylab('Difference') +
+    xlab('Days Since Storm') +
+    stoopidtheme +
+    theme(legend.position = c(0.9, 0.9))
+dif.art.cpue.np.p1
+```
+
+Arthur CPUE-Lr Season: Look at model diagnostics
+```{r, warning=FALSE}
+# run with  Prepost_num as the only explanatory variable
+
+### Test the GAM Model fit
+art.sg.15 %>% 
+      group_by(Hur_pp) %>%
+      do({model = gam(cpue.np.dist.100m ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .)    # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+### Test with GLM Model fit
+art.sg.15 %>%
+      group_by(Hur_pp) %>%
+      do({model = glm.nb(cpue.np.dist.100m ~ Prepost_num, data = .)   # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+```
+
+
+#### All Arthur CPUE-Lr Graphs
+```{r}
+ggarrange(art.15.pbar.npcpue, art.pbar.npcpue, art.cpue.np.p3, dif.art.cpue.np.p1, ncol = 1)
+
+```
+
+
+### Arthur BACI - Richness
+#### Arthur Short-term Richness
+Bargraph and ANOVA
+```{r}
+# No dif bw '14 (Arthur) and '15 for richness
+art.23.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  aov(N0 ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary(.)
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)
+ 
+
+# Graph
+art.15.pbar.n0 <- art.23.sg %>%
+  filter(Year == '2014' | Year == '2017') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(N0, na.rm = TRUE),
+                   sd = sd(N0, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Short-term') +
+  ylab('Richness') +
+  # ggtitle('2014 (Arthur) v. 2015') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("No Storm", 'Impact')) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 0.5, group = Hurricane, label=c('a', 'a', 'a', 'a'), ), position=position_dodge(0.9)) +
+  ylim(0, 10) +
+  annotate("text", x = 2.15, y = 10, label = "p=0.797", size = 3.5) +
+  stoopidtheme
+  # theme(legend.position = c(0.9, 0.9))
+
+```
+
+#### Arthur Seasonal Richness
+##### Arthur Richness Bargraphs and ANOVA
+```{r}
+# Richness
+art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  aov(N0 ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # no differences
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  
+
+art.pbar.n0 <- art.sg %>%
+  filter(Year == '2014' | Year == '2017') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(N0, na.rm = TRUE),
+                   sd = sd(N0, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Seasonal') +
+  ylab('Richness') +
+  # ggtitle('2014 (Arthur) v. 2015') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("No Storm", 'Impact')) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 0.5, group = Hurricane, label=c('a', 'a', 'a', 'a'), ), position=position_dodge(0.9)) +
+  ylim(0, 10) +
+  annotate("text", x = 2.15, y = 10, label = "p=0.519", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+```
+
+##### Arthur Richness Seasonal GAMs
+Predictions for Richness for arthur - Whole season
+```{r}
+## 1. make the dataframe to be predicted over
+art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  count(Prepost_num)
+# before dates
+b4dat <- expand.grid(Prepost_num = seq(-46, 0, length = 120),
+                     Hur_pp = c('No Storm_Before', 'Hurricane_Before'))
+# after dates
+afdat <- expand.grid(Prepost_num = seq(0, 115, length = 120),
+                     Hur_pp = c('No Storm_After', 'Hurricane_After'))
+pdat <- rbind(b4dat, afdat)  # bind them together
+
+## 2. the model (whole season gam)
+# this is only hinged on Days Since Storm
+# mod <-  art.sg %>%
+#   filter(Year == '2014' | Year == '2015') %>%
+#   group_by(Hur_pp) %>% 
+#   do(model = gam(N0 ~ s(Prepost_num, bs = 'cs', k = 3),
+#                  select = TRUE,
+#                  method = 'REML',
+#                  family = nb(link = 'log'),
+#                  data = .))
+
+# # test with glm instead of gam
+mod <- art.sg %>%
+  filter(Year == '2014' | Year == '2015') %>%
+  group_by(Hur_pp) %>%
+  do(model = glm.nb(N0 ~ Prepost_num, data = .))
+
+## get the inverse family link function to back calculate the errors and values on the response scale
+ilink.cb <- mod[[2]][[1]][["family"]][["linkinv"]]
+ilink.ib <- mod[[2]][[2]][["family"]][["linkinv"]]
+ilink.ca <- mod[[2]][[3]][["family"]][["linkinv"]]
+ilink.ia <- mod[[2]][[4]][["family"]][["linkinv"]]
+
+## 3. Run the model on all BACI elements (grouped by Hur_pp) and append it to the envspp.dum.maj.sg data
+# this runs a separate model for each level of Hur_pp
+# then calcualte the differences between impact vs control groups
+n0.art.pred <- pdat %>%
+  group_by(Hur_pp) %>%
+  nest %>%
+  inner_join(mod) %>%
+  mutate(preds = map2(model, data, 
+                      ~as.data.frame(predict(.x, .y, se.fit = TRUE)))) %>%
+  unnest(cols = c(preds, data))
+
+
+  
+  
+## 4. Calculate the fit on the response scale and get the 
+# long way of doing this bc i just cant figure it out
+n0.art.pred <- n0.art.pred %>%
+  mutate(resp_fit = c(ilink.cb(fit[Hur_pp == 'No Storm_Before']),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After']),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before']),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'])),
+         resp_upr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] + (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] + (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] + (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] + (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         resp_lwr = c(ilink.cb(fit[Hur_pp == 'No Storm_Before'] - (2*se.fit[Hur_pp == 'No Storm_Before'])),
+                      ilink.ca(fit[Hur_pp == 'No Storm_After'] - (2*se.fit[Hur_pp == 'No Storm_After'])),
+                      ilink.ib(fit[Hur_pp == 'Hurricane_Before'] - (2*se.fit[Hur_pp == 'Hurricane_Before'])),
+                      ilink.ia(fit[Hur_pp == 'Hurricane_After'] - (2*se.fit[Hur_pp == 'Hurricane_After']))),
+         se.upr = (resp_upr - resp_fit),
+         se.lwr = (resp_fit-resp_lwr)) %>%
+  separate(Hur_pp, c("Hurricane", 'Prepost_fctr'), sep = '_', remove = FALSE) %>%
+  group_by(Prepost_num, Prepost_fctr) %>%
+  mutate(diff = resp_fit[Hurricane == 'No Storm'] - resp_fit) %>%
+  mutate(upr.diff = diff + (1.96 * sqrt((se.upr[Hurricane == 'No Storm'])^2 + se.upr^2))) %>%
+  mutate(lwr.diff = diff - (1.96 * sqrt(se.lwr[Hurricane == 'No Storm']^2 + se.lwr^2)))  
+
+```
+
+Arthur Richenss Season: Plot the predicted smooth 
+```{r}
+# art.sg.15 <- art.sg %>%
+#   filter(Year == 2014 | Year  == 2015) 
+  
+art.n0.p3 <- ggplot() +
+  geom_point(data = art.sg.15, 
+             aes(x = Prepost_num, y = N0,
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp),
+             size = 2, position = position_dodge(0.5)) +
+  geom_line(data = n0.art.pred, aes(x = Prepost_num, y = resp_fit, group = Hur_pp, linetype = Hur_pp, color = Hur_pp)) +
+  geom_ribbon(data = n0.art.pred, aes(x = Prepost_num, ymin = resp_lwr, ymax = resp_upr, group = Hur_pp, fill = Hur_pp), alpha = 0.5, color = NA) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    xlab('Days Since Storm') +
+    ylab(bquote('CPUE (100' *m^-1*')')) +
+    stoopidtheme +
+    theme(legend.position = c(0.8, 0.85)) + 
+    guides(fill = guide_legend(ncol = 2))
+
+```
+
+Arthur Richenss Season: plot the difference smooths with errors
+```{r}
+## 4. plot the difference smooths with errors
+dif.art.n0.p1 <- n0.art.pred %>%
+  group_by(Prepost_num) %>%
+  filter(!Hurricane == 'No Storm') %>%
+  ggplot(aes(x=Prepost_num, y = diff, 
+             group = Prepost_fctr, color = Prepost_fctr, 
+             linetype = Prepost_fctr)) +
+    geom_ribbon(aes(ymin = lwr.diff, ymax = upr.diff), alpha = 0.3, color = NA) +
+    # geom_point()
+    # geom_line() +
+    geom_smooth() +
+    scale_linetype_manual(values = c(c('dashed', 'solid'), twocolors), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    scale_color_manual(values = c('#6082B6', '#6082B6'), 
+                        breaks = c('Before', 'After'),
+                        labels = c('Before', 'After')) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'gray50') +
+    ylab('Difference') +
+    xlab('Days Since Storm') +
+    stoopidtheme +
+    theme(legend.position = c(0.9, 0.9))
+dif.art.n0.p1
+```
+
+Arthur Richness Season: Look at model diagnostics
+```{r, warning=FALSE}
+# run with  Prepost_num as the only explanatory variable
+
+### Test the GAM Model fit
+art.sg.15 %>% 
+      group_by(Hur_pp) %>%
+      do({model = gam(N0 ~ s(Prepost_num, bs = 'cs', k = 3),
+                 select = TRUE,
+                 method = 'REML',
+                 family = nb(link = 'log'),
+                 data = .)    # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+### Test with GLM Model fit
+art.sg.15 %>%
+      group_by(Hur_pp) %>%
+      do({model = glm.nb(N0 ~ Prepost_num, data = .)   # create your model
+      data.frame(broom.mixed::tidy(model),              # get coefficient info
+                 broom.mixed::glance(model))}) %>%          # get model info
+  mutate_if(is.numeric, round, digits = 3)
+
+
+```
+
+Arthur vs 2015 all N0 graphs
+```{r}
+ggarrange(art.15.pbar.n0, art.pbar.n0, art.n0.p3, dif.art.n0.p1, ncol = 1)
+
+```
+
+### Arthur Combined Graphs
+Combined Arthur BACI figures
+```{r}
+# with short term bargraph, seasonal bargraph, scatter plot (with predicted lines), difference plot, 
+all.art.plots <- ggarrange(art.15.pbar.cpue + rremove('xlab'), art.pbar.cpue + rremove('xlab'), art.cpue.p3 + rremove('xlab'), dif.art.cpue.p1 + rremove('xlab'), 
+          art.15.pbar.npcpue + rremove('xlab'), art.pbar.npcpue + rremove('xlab'), art.cpue.np.p3 + rremove('xlab'), dif.art.cpue.np.p1 + rremove('xlab'), 
+          art.15.pbar.n0, art.pbar.n0, art.n0.p3, dif.art.n0.p1, 
+          labels = 'AUTO', align = 'hv', legend = 'none', 
+          ncol = 4, nrow = 3)
+
+ggpubr::annotate_figure(all.art.plots, 
+                        top = text_grob("Hurricane Arthur v. 2015", color = "black", face = "bold", size = 14))
+                        # fig.lab = 'Hurricane Arthur v. 2015',
+                        # fig.lab.face = 'bold',
+                        # fig.lab.size = 14,
+                        # fig.lab.pos = 'top.left')
+
+# column 1 -- short term bargraphs
+ggarrange(art.15.pbar.cpue, art.15.pbar.npcpue, art.15.pbar.n0, ncol = 1, common.legend = TRUE, labels = c('A', 'F', 'K'))
+
+# column 2 -- seasonal bargraphs
+ggarrange(art.pbar.cpue, art.pbar.npcpue, art.pbar.n0, ncol = 1, common.legend = TRUE, labels = c('B', 'F', 'K'))
+
+# all predicted scatterplots (column 3)
+ggarrange(art.cpue.p3, art.cpue.np.p3, art.n0.p3, ncol = 1, common.legend = TRUE, labels = c('C', 'H', 'M'))
+
+# all difference smooths (column 3)
+ggarrange(dif.art.cpue.p1, dif.art.cpue.np.p1, dif.art.n0.p1, ncol = 1, common.legend = TRUE, labels = c('D', 'I', 'N'))
+
+
+```
+
+
+## BACI Matthew 2016 vs Control 2017
+Matthew/October data
+```{r}
+matt <- envspp.dum %>%
+  dplyr::filter(Year %in% c(2013, 2017, 2015, 2016)) %>%
+  dplyr::select(-c(Stormdate, Prepost_num, Prepost_fctr)) %>%
+  mutate(Stormdate = recode(Year, 
+         "2013" = "2013-10-09",
+         "2015" = "2015-10-09",
+         "2016" = "2016-10-09", # Matthew
+         "2017" = "2017-10-09")) %>%
+  mutate(Stormdate = ymd(Stormdate)) %>%
+  mutate(Prepost_num = as.integer(yday(Date) - yday(Stormdate))) %>%
+  mutate(Prepost_fctr = ifelse(Prepost_num < 0, 'Before', 'After')) %>%
+  mutate(Prepost_fctr = ordered(Prepost_fctr, levels = c('Before', 'After'))) %>%
+  unite('Hur_pp', Hurricane, Prepost_fctr, sep = '_', remove = FALSE) %>%
+  mutate(Hur_pp = as.factor(Hur_pp)) %>%
+  # mutate(Hur_pp = ordered(Hur_pp, levels = c('No Storm_Before', 'No Storm_After', 'Hurricane_Before', 'Hurricane_After'))) %>%
+  mutate(oHur = ordered(Hurricane, levels = c('0', '1')))
+
+matt.sg <- matt %>%
+  filter(Habitat == 'seagrass')
+
+# The closest "before" sample for Matthew was 48 days before the storm
+ # can only compare matthew to either 2015 or 2017 bc they have samples after the stormdate
+ matt.sg %>%
+   count(Year, Prepost_num)
+ matt.sg %>%
+   count(Year, Prepost_fctr)
+
+```
+
+### Matthew BACI ANOVAs
+```{r}
+# check outliers (non detected)
+performance::check_outliers(aov(cpue.np.dist.100m ~ Prepost_fctr * Hurricane, data = matt.sg))
+
+##  Test for homogeneity of variances -- nothing passes as there is definitely more variance in before data
+# log transformation works for cpue.dist.100m
+# log transformation for cpue.np.dist.100m
+# square root transfrom for richness
+levene_test(sqrt(N0) ~ Prepost_fctr * Hurricane, data = matt.sg, center = 'median') # close
+fligner.test(((matt.sg$cpue.np.dist.100m+1)) ~ Hur_pp, data = matt.sg)
+
+rcompanion::plotNormalHistogram(log(matt.sg$N0+1))
+
+# test for normality after transforming-- everything fails
+by(log(matt.sg$cpue.np.dist.100m + 1), matt.sg$Hur_pp, shapiro.test)
+# plot the ANOVA, and the QQ plot looks normal-esque
+plot(aov(N0^(1/2) ~ Prepost_fctr * Hurricane, data = matt.sg))
+
+```
+
+Run the anovas on transformed data
+```{r}
+# There is a dif bw '16 (Matthew) and '17 for cpue.dist.100m
+matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  aov(log(cpue.dist.100m + 1) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  # nb4/ctl-aft/ctl, b4/ctl-aft/imp, b4/hur
+
+# No dif bw '16 (Matthew) and '17 for cpue.np.dist.100m
+ matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  aov(log(cpue.np.dist.100m + 1) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary(.)
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  # after periods are different
+ 
+# No dif bw '16 (Matthew) and '17 for richness
+matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  aov(N0^(1/2) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary(.)
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)
+ 
+```
+
+### Matthew CPUE Bargraph
+Proceed with Matthew (2016) against 2017 for  CPUE
+CPUE Barplot by pre vs post season
+```{r}
+# CPUE 
+matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  aov(log(cpue.dist.100m) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # interaction is not signif but indivd factors are
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  
+
+matt.pbar.cpue <- matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(cpue.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%  # 2016 decline =  90% ; 2017 decline = 65%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('2016 (Matthew) v. 2017') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("No Storm", "Impact")) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 200, group = Hurricane, label=c('a', 'ac', 'b', 'c'), ), position=position_dodge(0.9)) +
+  ylim(0, 310) +
+  annotate("text", x = 2.15, y = 310, label = "p=0.011", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+```
+
+
+### Matthew CPUE -NP
+No pinfish season bargraph
+```{r}
+# CPUE - Lr
+matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  aov(log(cpue.np.dist.100m + 1) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # no differences
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)
+
+# CPUE - no pinfish
+matt.pbar.npcpue <- matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(cpue.np.dist.100m, na.rm = TRUE),
+                   sd = sd(cpue.np.dist.100m, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%  # 2016 decline =  74% ; 2017 decline = 72%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('Seasonal') +
+  ylab(bquote('CPUE (100' *m^-1*')')) +
+  # ggtitle('2016 (Matthew) v. 2017') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("Control", "Impact")) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 50, group = Hurricane, label=c('a', 'a', 'b', 'a') ), position=position_dodge(0.9)) +
+  ylim(0, 50) +
+  annotate("text", x = 2.15, y = 50, label = "p=0.364", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+```
+
+
+### Matthew - Richness
+Richness season bargraph
+```{r}
+# Richness
+matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  aov(N0^(1/2) ~ Prepost_fctr * Hurricane, data = .) %>%
+   summary()  # no differences
+  # tukey_hsd() %>%
+  #  select(group1, group2, p.adj)  
+
+matt.pbar.n0 <- matt.sg %>%
+  filter(Year == '2016' | Year == '2017') %>%
+  group_by(Hurricane, Prepost_fctr) %>%
+  dplyr::summarise(tibble(n = n(),
+                   mean = mean(N0, na.rm = TRUE),
+                   sd = sd(N0, na.rm = TRUE),
+                   se = sd/sqrt(n),
+                   sig.lab = mean + se)) %>%
+  ggplot(aes(x = Prepost_fctr, y = mean, group = Hurricane, fill = Hurricane)) +
+  geom_bar(position = position_dodge(),
+           stat = 'identity') + 
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  xlab('') +
+  ylab('Richness') +
+  # ggtitle('2016 (Matthew) v. 2017') +
+  scale_x_discrete(labels = c('Before', 'After'))+
+  scale_fill_manual(values = twocolors, labels = c("No Storm", "Impact")) +
+  # geom_text(aes(x = Prepost_fctr, y = sig.lab + 0.5, group = Hurricane, label=c('a', 'a', 'b', 'a'), ), position=position_dodge(0.9)) +
+  ylim(0, 8) +
+  annotate("text", x = 2.15, y = 8, label = "p=0.136", size = 3.5) +
+  stoopidtheme +
+  theme(legend.position = c(0.9, 0.9))
+```
+
+
+### All Matthew figures (Only seasonal)
+```{r}
+# all the matthew bargraphs
+ggarrange(matt.pbar.cpue + rremove('xlab'), 
+          matt.pbar.npcpue + rremove('xlab'), 
+          matt.pbar.n0,
+          labels = 'AUTO', align = 'hv', legend = 'none', 
+          ncol = 1, nrow = 3)
+
+```
+
+## Combine all off-season figures
+```{r} 
+# ArthurL short term bargraph, Arthur:seasonal bargraph, Arthur:scatter plot (with predicted lines), Arthur difference plot, Matthew Seasonal bargraph
+all.off.plots <- ggarrange(
+  art.15.pbar.cpue + rremove('xlab'), 
+      art.pbar.cpue + rremove('xlab') + rremove('ylab'), 
+      art.cpue.p3 + rremove('xlab') + rremove('ylab'), 
+      dif.art.cpue.p1 + rremove('xlab') , 
+  matt.pbar.cpue + rremove('xlab'), 
+  art.15.pbar.npcpue + rremove('xlab'), 
+      art.pbar.npcpue + rremove('xlab') + rremove('ylab'),
+      art.cpue.np.p3 + rremove('xlab') + rremove('ylab'), 
+      dif.art.cpue.np.p1 + rremove('xlab'), 
+  matt.pbar.npcpue + rremove('xlab'),
+  art.15.pbar.n0, 
+      art.pbar.n0 + rremove('ylab'), 
+      art.n0.p3 + rremove('ylab'), 
+      dif.art.n0.p1, 
+  matt.pbar.n0,
+  labels = 'AUTO', align = 'hv', legend = 'none', 
+  ncol = 5, nrow = 3)
+
+# ggpubr::annotate_figure(all.off.plots, 
+#                         top = text_grob("Hurricane Arthur v. 2015", color = "black", face = "bold", size = 14))
+                        # fig.lab = 'Hurricane Arthur v. 2015',
+                        # fig.lab.face = 'bold',
+                        # fig.lab.size = 14,
+                        # fig.lab.pos = 'top.left')
+
+```
+
+Save Fig 4
+```{r, eval = FALSE}
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/tiffs/Fig4.tiff",
+#        plot = last_plot(), device = 'tiff',
+#        width = 16, height = 8.5, units = "in", dpi = 300)
+
+```
+
+
+
+
+
+# Intensity & change
+## Short-term Change ~ ACE
+### Proportional CPUE ~ ACE figures, Short-term
+```{r}
+library(VGAM)
+# All fishes, short time
+summary(tm <- vglm(prop.100  ~ log(ace.nc) , tobit(Lower = -100, type.fitted = 'censored'), lsd = 'loglink', data = cpue.ace.pdat))
+r <- cor(fitted(tm)[,1], cpue.ace.pdat$prop.100)  # 0.7189099
+# variance accounted
+r^2   # 0.5168314
+confintvglm(tm, level = 0.95, method = c("profile"))  # confidence interval
+# predict the model to be able to plot the confidence interval
+
+plotdat <- expand.grid(ace.nc = seq(0, 12.5, length = 25))
+tm.pred <- as.data.frame(predict(tm, newdata=plotdat, se.fit = TRUE)) %>%
+  dplyr::select(fitted.values.mu, se.fit.mu) %>%
+  mutate(ace.nc = plotdat$ace.nc) %>%
+  mutate(se.upr = fitted.values.mu + 1.96*se.fit.mu,
+         se.lwr = fitted.values.mu - 1.96*se.fit.mu) %>%
+  mutate(se.lwr.trunc = ifelse(se.lwr < -100, -100, se.lwr))
+
+# make a color palette for the months
+my_blue = RColorBrewer::brewer.pal(n = 7, "Blues")[3:7] #there are 9, I exluded the two lighter hues
+
+h.p1c <- ggplot() +
+  geom_point(data = cpue.ace.pdat,
+             aes(x = ace.nc, y = prop.100, colour = Month), size = 3) + 
+  scale_colour_manual(name = 'Month', values=my_blue) +
+  geom_errorbar(data = cpue.ace.pdat,
+                aes(x = ace.nc, ymin = prop.100-prop.se, ymax = prop.100 + prop.se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  geom_ribbon(data = tm.pred, aes(x = ace.nc, ymin = se.lwr.trunc, ymax = se.upr), alpha = 0.2) +
+  geom_line(aes(x = cpue.ace.pdat$ace.nc, y = fitted(tm)), cex = 0.8) +
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+  xlab('Accumulated Cyclone Energy (NC impact)') +
+  ylab(expression(paste("\u0394", "CPUE (%)", sep = "")) ) +
+  annotate("text_npc", npcx = 0.8, npcy = 0.96, hjust = 0, parse = TRUE, size = 3.25, label = "atop(R^2 == 0.52, p == 0.006)") +
+  ylim(-115, 400) +
+  ylab(expression(paste("\u0394", "CPUE (%)", sep = ""))) +
+  # labs(title = '23 Before and After') +
+  stoopidtheme
+# theme(legend.position="top")
+
+```
+
+### pCPUE-NP ~ ACE Short term
+```{R}
+# # plot with the tobit model and confidence intervals
+# # no pinfish, prop
+summary(tm.np <- vglm(prop.100.np ~ log(ace.nc) , tobit(Lower = -100, type.fitted = 'censored'), data = cpue.ace.pdat))  # p=0.041
+# predict data to get confidence intervals
+plotdat <- expand.grid(ace.nc = seq(0, 12.5, length = 25))
+tm.np.pred <- as.data.frame(predict(tm.np, newdata=plotdat, se.fit = TRUE)) %>%
+  dplyr::select(fitted.values.mu, se.fit.mu) %>%
+  mutate(ace.nc = plotdat$ace.nc) %>%
+  mutate(se.upr = fitted.values.mu + 1.96*se.fit.mu,
+         se.lwr = fitted.values.mu - 1.96*se.fit.mu) %>%
+  mutate(se.lwr.trunc = ifelse(se.lwr < -100, -100, se.lwr))
+
+# correlation
+r <- cor(fitted(tm.np)[,1], cpue.ace.pdat$prop.100.np)
+# variance accounted
+r^2   # 0.3199427
+
+h.p1d <- ggplot() +
+  geom_point(data = cpue.ace.pdat,
+             aes(x = ace.nc, y = prop.100.np, colour = Month), size = 3) + 
+  scale_colour_manual(name = 'Month', values=my_blue) +
+  geom_errorbar(data = cpue.ace.pdat,
+                aes(x = ace.nc, ymin = prop.100.np-prop.se.np, ymax = prop.100.np + prop.se.np),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  geom_ribbon(data = tm.np.pred, aes(x = ace.nc, ymin = se.lwr.trunc, ymax = se.upr), alpha = 0.2) +
+  geom_line(aes(x = cpue.ace.pdat$ace.nc, y = fitted(tm.np)), cex = 0.8) +
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+  xlab('Accumulated Cyclone Energy (NC impact)') +
+  ylab(expression(paste("\u0394", "CPUE (%)", sep = "")) ) +
+  annotate("text_npc", npcx = 0.8, npcy = 0.96, hjust = 0, parse = TRUE, size = 3.25, label = "atop(R^2 == 0.32, p == 0.041)") +
+  ylim(-115, 115) +
+  ylab(expression(paste("\u0394", "CPUE-Lr (%)", sep = ""))) +
+  # labs(title = '23 Before and After') +
+  stoopidtheme
+# theme(legend.position="top")
+h.p1d
+
+# ggarrange(h.p1c, h.p1d, labels = c('A', 'B'))
+```
+
+### Richness ~ ACE Short term
+Calculate month change in richness
+```{r}
+# Calculate month to month change in richness, select only the months surrounding the cyclone,=
+ace.mthdif.n0 <- envspp.dum %>%
+   filter(Tow.ID != 1429) %>%
+   filter(Habitat == 'seagrass') %>%
+   group_by(Year, ace.nc, Prepost_fctr, Month, Stormdate) %>%
+   dplyr::summarize(n = n(),  
+            mean.n0 = mean(N0), 
+            sd = sd(N0, na.rm = TRUE),
+            se = sd/sqrt(n),
+            .groups = 'drop') %>%
+   group_by(Year) %>%
+   dplyr::mutate(dif.n0 = mean.n0 - dplyr::lag(mean.n0)) %>%  # raw change
+   dplyr::mutate(dif.se = sqrt((sd/n) + (lag(sd)/lag(n)))) %>%
+   dplyr::mutate(pdif = (dif.n0/lag(mean.n0))*100)  %>% # calculate proportional change
+    filter(! is.na(ace.nc) & Prepost_fctr == 'After') %>%
+  dplyr::mutate(Storm.Month = factor(month(Stormdate),
+                                     levels = c("5", "7", "8", '9', '10')))
+    # slice_min(Month)
+ace.mthdif.n0 <- ace.mthdif.n0[c(1, 2, 4, 9, 13, 14, 15, 16, 17), ]  # select the ones I want
+ace.mthdif.n0 <- ace.mthdif.n0 %>% # change the florence after to michael after ACE
+  mutate(ace.nc = case_when(Year == 2018 & Month == 10 ~ 2.625,
+                            TRUE ~ ace.nc)) 
+```
+
+Plot the change in richness
+```{r}
+
+## calculate the linear mod
+# normal linear regressions for raw change
+summary(lm(dif.n0 ~ ace.nc, data = ace.mthdif.n0 ))   # Adj. R2 = 0.4147
+
+# plot the raw change from month before and month after
+pdif.n0 <- ace.mthdif.n0 %>%
+  ggplot(aes(x = ace.nc, y = dif.n0)) +
+    geom_point(aes(colour = Storm.Month), size = 3) + 
+    scale_colour_manual(values=my_blue) +
+    geom_errorbar(aes(ymin = dif.n0-se, ymax = dif.n0 + se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+    geom_smooth(method = 'lm', se = TRUE, color = 'black') +
+    xlab('Accumulated Cyclone Energy (NC impact)') +
+    ylab(expression(paste("\u0394", "Richness", sep = "")) ) +
+    annotate("text_npc", npcx = 0.8, npcy = 0.96, hjust = 0, parse = TRUE, size = 3.25,
+             label = "atop(R^2 == 0.42, p == 0.036)") +
+    ylim(-8, 6) +
+  stoopidtheme
+  # theme(legend.position = 'top')
+
+## plot the proportional change from month before and month after. This is misleading since the values are so small.
+# ace.mthdif.n0 %>%
+#   ggplot(aes(x = ace.nc, y = pdif)) +
+#     geom_point() + 
+#     geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+#     xlab('Accumulated Cyclone Energy (NC impact)') +
+#     ylab('dRichness') +
+#   stoopidtheme
+
+```
+
+
+
+
+## Seasonal Change ~ Intensity
+Data
+```{r}
+# Calculate the BACI difference in CPUE for the whole summer
+cpue.ace.pdat.yr <- envspp.dum %>%
+  group_by(Year, Stormdate, Prepost_fctr, ace.nc, StormSurge) %>%
+  summarise(n = n(),
+            mean.cpue = mean(cpue.dist.km, na.rm = TRUE),
+            sd.cpue = sd(cpue.dist.km, na.rm = TRUE), 
+            mean.cpuenp = mean(cpue.np.dist.km, na.rm = TRUE),
+            sd.cpuenp = sd(cpue.np.dist.km, na.rm = TRUE),
+            .groups = 'drop') %>%
+  group_by(Year) %>%
+  dplyr::mutate(dif.cpue = mean.cpue - dplyr::lag(mean.cpue)) %>%
+  dplyr::mutate(dif.cpue.p = (dif.cpue/lag(mean.cpue))*100) %>%
+  dplyr::mutate(dif.cpue.se = sqrt(((sd.cpue ^2)/n) + lag((sd.cpue ^2)/n))) %>%
+  dplyr::mutate(dif.cpue.p.se = (dif.cpue.se/lag(mean.cpue))*100) %>%
+  dplyr::mutate(dif.cpuenp = mean.cpuenp - dplyr::lag(mean.cpuenp)) %>%
+  dplyr::mutate(dif.cpuenp.p = (dif.cpuenp/lag(mean.cpuenp))*100) %>%
+  dplyr::mutate(dif.cpuenp.se = sqrt(((sd.cpuenp ^2)/n) + lag((sd.cpuenp ^2)/n))) %>%
+  dplyr::mutate(dif.cpuenp.p.se = (dif.cpuenp.se/lag(mean.cpuenp))*100) %>%
+  dplyr::mutate(Month = factor(month(Stormdate),
+                                  levels = c("5", "7", "8", '9', '10')),
+                .after = 'Stormdate')
+```
+
+### prop.CPUE ~ ACE, Whole season 
+```{r}
+### All fishes, whole season
+summary(tm.yr <- vglm(dif.cpue.p ~ log(ace.nc), tobit(Lower = -100, type.fitted = 'censored'), data = cpue.ace.pdat.yr))  # p = 0.005
+# predict the model to get the confidence intervals
+plotdat <- expand.grid(ace.nc = seq(0, 12.5, length = 25))
+tm.yr.pred <- as.data.frame(predict(tm.yr, newdata=plotdat, se.fit = TRUE)) %>%
+  dplyr::select(fitted.values.mu, se.fit.mu) %>%
+  mutate(ace.nc = plotdat$ace.nc) %>%
+  mutate(se.upr = fitted.values.mu + 1.96*se.fit.mu,
+         se.lwr = fitted.values.mu - 1.96*se.fit.mu) %>%
+  mutate(se.lwr.trunc = ifelse(se.lwr < -100, -100, se.lwr))
+
+# correlation
+cpue.ace.pdat.yr.na <- cpue.ace.pdat.yr %>%
+  filter(! is.na(dif.cpue.p) & ! is.na(ace.nc))
+r <- cor(fitted(tm.yr)[,1], cpue.ace.pdat.yr.na$dif.cpue.p)
+# variance accounted
+r^2   # 0.5920929
+
+h.p1c.yr <- ggplot() +
+  geom_point(data = cpue.ace.pdat.yr.na,
+             aes(x = ace.nc, y = dif.cpue.p, colour = Month), size = 3) + 
+  scale_colour_manual(name = 'Month', values=my_blue) +
+  geom_errorbar(data = cpue.ace.pdat.yr.na,
+                aes(x = ace.nc,ymin = dif.cpue.p-dif.cpue.p.se, ymax = dif.cpue.p + dif.cpue.p.se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  geom_ribbon(data = tm.yr.pred, aes(x = ace.nc, ymin = se.lwr.trunc, ymax = se.upr), alpha = 0.2) +
+  geom_line(aes(x = cpue.ace.pdat.yr.na$ace.nc, y = fitted(tm.yr)), cex = 0.8) +
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+  xlab('Accumulated Cyclone Energy (NC impact)') +
+  ylab(expression(paste("\u0394", "CPUE (%)", sep = "")) ) +
+  annotate("text_npc", npcx = 0.8, npcy = 0.96, hjust = 0, parse = TRUE, size = 3.25, 
+           label = "atop(R^2 == 0.59, p == 0.005)") +
+  ylim(-115, 400) + 
+  ylab(expression(paste("\u0394", "CPUE (%)", sep = ""))) +
+  stoopidtheme
+h.p1c.yr
+
+
+```
+
+### prop.CPUE-Lr ~ ACE, Whole season 
+```{r}
+### No pinfish, whole season
+summary(tm.np.yr <- vglm(dif.cpuenp.p ~ log(ace.nc), tobit(Lower = -100, type.fitted = 'censored'), data = cpue.ace.pdat.yr))   # p < 0.001
+# predict the model to get the confidence intervals
+plotdat <- expand.grid(ace.nc = seq(0, 12.5, length = 25))
+tm.np.yr.pred <- as.data.frame(predict(tm.np.yr, newdata=plotdat, se.fit = TRUE)) %>%
+  dplyr::select(fitted.values.mu, se.fit.mu) %>%
+  mutate(ace.nc = plotdat$ace.nc) %>%
+  mutate(se.upr = fitted.values.mu + 1.96*se.fit.mu,
+         se.lwr = fitted.values.mu - 1.96*se.fit.mu) %>%
+  mutate(se.lwr.trunc = ifelse(se.lwr < -100, -100, se.lwr))
+
+# correlation
+r <- cor(fitted(tm.np.yr)[,1], cpue.ace.pdat.yr.na$dif.cpuenp.p)
+# variance accounted
+r^2   # 0.6502853
+
+
+h.p1d.yr <- ggplot() +
+  geom_point(data = cpue.ace.pdat.yr.na,
+             aes(x = ace.nc, y = dif.cpuenp.p, colour = Month), size = 3) + 
+  scale_colour_manual(name = 'Month', values=my_blue) +
+  geom_errorbar(data = cpue.ace.pdat.yr.na,
+                aes(x = ace.nc,ymin = dif.cpuenp.p-dif.cpuenp.p.se, ymax = dif.cpuenp.p + dif.cpuenp.p.se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+  geom_ribbon(data = tm.np.yr.pred, aes(x = ace.nc, ymin = se.lwr.trunc, ymax = se.upr), alpha = 0.2) +
+  geom_line(aes(x = cpue.ace.pdat.yr.na$ace.nc, y = fitted(tm.np.yr)), cex = 0.8) +
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+  xlab('Accumulated Cyclone Energy (NC impact)') +
+  ylab(expression(paste("\u0394", "CPUE (%)", sep = "")) ) +
+  annotate("text_npc", npcx = 0.8, npcy = 0.96, hjust = 0, parse = TRUE, size = 3.25, 
+           label = "atop(R^2 == 0.61, p < 0.001)") +
+  ylim(-115, 115) + 
+  ylab(expression(paste("\u0394", "CPUE-Lr (%)", sep = ""))) +
+  # labs(title = 'May-October') +
+  stoopidtheme
+# theme(legend.position="top")
+h.p1d.yr
+
+
+ggarrange(h.p1c.yr, h.p1d.yr)
+
+
+
+```
+
+### Richnes ~ ACE Whole season
+Calculate all change in richness
+```{r}
+# Calculate change in richness by just pre and post and plot it
+ace.alldif.n0 <- envspp.dum %>%
+  filter(Tow.ID != 1429) %>%
+  # filter(between(as.integer(Prepost_num), -40, 40)) %>%
+  filter(Habitat == 'seagrass') %>%
+  group_by(Year, ace.nc, Prepost_fctr, Stormdate) %>%
+  dplyr::summarize(n = n(),
+          mean.n0 = mean(N0),
+          sd = sd(N0, na.rm = TRUE),
+          se = sd/sqrt(n),
+          .groups = 'drop') %>%
+  group_by(Year) %>%
+  dplyr::mutate(dif.n0 = mean.n0 - dplyr::lag(mean.n0)) %>%
+  dplyr::mutate(dif.se = sqrt((sd/n) + (lag(sd)/lag(n)))) %>%
+  filter(! is.na(ace.nc) & Prepost_fctr == 'After') %>%
+  mutate(Month = factor(month(Stormdate),
+                           levels = c("5", "7", "8", '9', '10')), 
+         .after = 'Stormdate')
+```
+
+Plot change in richness ~ ACE
+```{r}
+## calculate the linear mod
+# normal linear regressions for raw change for all before and all after
+summary(lm(dif.n0 ~ ace.nc, data = ace.alldif.n0 ))   # Adj. R2 = 0.08684
+  
+# plot the raw change from all before and all after, with the linear model and stasts
+pdif.n0.b <- ace.alldif.n0 %>%
+  ggplot(aes(x = ace.nc, y = dif.n0)) +
+    geom_point(aes(colour = Month), size = 3) + 
+    scale_colour_manual(values=my_blue) +
+    geom_errorbar(aes(ymin = dif.n0-se, ymax = dif.n0 + se),
+                width = 0.2,
+                position = position_dodge(0.9)) +
+    geom_smooth(method = 'lm', se = TRUE, color = 'black') +
+    geom_hline(yintercept = 0, linetype = 'dashed', color = 'gray40') +
+    xlab('Accumulated Cyclone Energy (NC impact)') +
+    ylab(expression(paste("\u0394", "Richness", sep = "")) ) +
+    annotate("text_npc", npcx = 0.8, npcy = 0.96, hjust = 0, parse = TRUE, size = 3.25,
+             label = "atop(R^2 == 0.09, p == 0.244)") +
+  ylim(-8, 6) +
+  stoopidtheme 
+  # theme(legend.position = 'top')
+
+```
+
+
+## ALL change plots
+```{r}
+fig5.23 <- ggarrange(h.p1c + rremove('xlab'), 
+                     h.p1d + rremove('xlab'), 
+                     pdif.n0 + rremove('xlab'),   
+                     labels = c('A', 'B', 'C'), 
+                     ncol = 1, nrow = 3, align = 'hv',
+                     common.legend =TRUE, legend = 'none')
+  
+  
+
+fig5.23 <- annotate_figure(fig5.23,
+                top = text_grob("Short-term", just = 'center',
+                                color = "black", face = "bold", size = 12))
+
+fig5.yr <- ggarrange(h.p1c.yr + rremove('xlab'), # CPUE
+                     h.p1d.yr + rremove('xlab'), # CPUE-Lr
+                     pdif.n0.b + rremove('xlab'),  # Richness
+                     labels = c('D', 'E', 'F'), 
+                     ncol = 1, align = 'hv',
+                     common.legend =TRUE, legend = 'right')
+
+fig5.yr <- annotate_figure(fig5.yr,
+                top = text_grob("Seasonal", just = 'center',
+                                color = "black", face = "bold", size = 12))
+
+
+fig5 <- ggarrange(fig5.23, fig5.yr, widths = c(1, 1.15), common.legend = TRUE, legend = 'right', ncol =2, nrow = 1)
+fig5 <- annotate_figure(fig5,
+                bottom = text_grob("Accumlated Cyclone Energy (NC Impact)",
+                                   just = 'center',
+                                   color = "black",
+                                   size = 12))
+```
+
+Export Figure 5 (Change ~ ACE plots)
+```{r, eval = FALSE}
+ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Fig5.tiff",
+       plot = fig5, device = 'tiff',
+       width = 8, height = 6.5, units = "in", dpi = 300)
+# 
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Fig5yr.tiff",
+#        plot = fig5.yr, device = 'tiff',
+#        width = 4, height = 6.5, units = "in", dpi = 300)
+
+
+```
+
+# Seagrass Change
+Read in combined percent cover data
+```{r}
+
+sg.combo1 <- data.table::fread('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Seagrass_Data/SGdata_PC_Combo.csv', sep = ',', nThread = numCores)
+
+```
+
+
+Calculate an average by month
+```{r}
+cover.month.dat <- sg.combo1 %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4', 'SG5', 'SG6', 'SG7', 'SG8', 'SG9', 'SG10', 'SG11', 'SG12', 'SG13', 'SG14', 'SG15', 'SG16', 'SG17', 'DK4', 'DK7')) %>%
+  mutate(Date= make_date(year, month, day)) %>%
+  group_by(study, Date, Prepost_num, Prepost_fct, Hurricane, Stormdate, site.uni, Transect) %>%
+  summarize(n = n(),
+            mean.z = mean(Zostera),
+            mean.h = mean(Halodule),
+            mean.r = mean(Rupia), 
+            mean.all = mean(Total.sg), 
+            .groups = 'drop') %>%  # this calculates by transect
+  mutate(Month = month(Date)) %>%
+  mutate(Year = year(Date)) %>%
+  mutate(Jday = yday(Date)) %>%
+  group_by(Month, Prepost_fct, Hurricane, Stormdate, Year, site.uni) %>%
+  summarize(n.transects = n(), 
+            pc.mean = mean(mean.all),
+            sd = sd(mean.all),
+            se = sd/sqrt(n.transects), 
+            .groups = 'drop')  # now get the monthly mean
+
+
+# calculate based upon baci
+cover.month.pp <- sg.combo1 %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4', 'SG5', 'SG6', 'SG7', 'SG8', 'SG9', 'SG10', 'SG11', 'SG12', 'SG13', 'SG14', 'SG15', 'SG16', 'SG17', 'DK4', 'DK7')) %>%
+  mutate(Date= make_date(year, month, day)) %>%
+  group_by(study, Date, Prepost_num, Prepost_fct, Hurricane, Stormdate, site.uni, Transect) %>%
+  summarize(n = n(),
+            mean.z = mean(Zostera),
+            mean.h = mean(Halodule),
+            mean.r = mean(Rupia), 
+            mean.all = mean(Total.sg), 
+            .groups = 'drop') %>%
+  mutate(Month = month(Date)) %>%
+  mutate(Year = year(Date)) %>%
+  unite('Hur_pp', Hurricane, Prepost_fct, remove = FALSE) %>%
+  mutate(Hur_pp = factor(Hur_pp, levels = c("No Storm_Before", "Hurricane_Before", "No Storm_After",  "Hurricane_After"))) %>%
+  group_by(Month, Hur_pp, site.uni) %>%
+  summarize(n.transects = n(), 
+            pc.mean = mean(mean.all),
+            sd = sd(mean.all),
+            se = sd/sqrt(n.transects), 
+            .groups = 'drop')
+```
+
+Only sites we're interested in
+```{r}
+cover.month.dat %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4'))
+
+cover.month.pp %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4'))
+
+```
+
+Figures (not in MS)
+```{r}
+pcbyyear <- cover.month.dat %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4')) %>%
+  ggplot(aes(x = Month, y = pc.mean, color = site.uni, group = site.uni)) +
+    geom_point() +
+    geom_line() +
+    facet_wrap(vars(Year), nrow = 2) +
+    stoopidtheme +
+    theme(legend.position = 'right')
+
+
+pc2019 <- cover.month.dat %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4')) %>%
+  # filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4', 'SG6', 'SG7', 'SG8', 'SG9')) %>%
+  # filter(Month > 4) %>%
+  filter(Year == 2019) %>%
+  ggplot(aes(x = Month, y = pc.mean, color = Prepost_fct, fill = Prepost_fct, group = as.factor(Year), shape = as.factor(Year))) +
+    geom_point(aes(fill = Prepost_fct, shape = as.factor(Year)), position = position_dodge(0.6), size = 2.5) +
+    # geom_line(position = position_dodge(0.4)) +
+    geom_errorbar(aes(ymin = pc.mean - se, ymax = pc.mean + se), width = 0.3, position = position_dodge(0.6))+
+    scale_shape_manual(values = c(21, 22, 23, 24),
+                       breaks = c('2013', '2014', '2016', '2019'),
+                       labels = c('2013', '2014', '2016', '2019')) +
+    scale_fill_manual(values = c('grey20', 'white'),
+                      breaks = c('Before', 'After'),
+                      labels = c('Before', 'After')) +
+    scale_color_manual(values = c('grey20', 'grey50'),
+                      breaks = c('Before', 'After'),
+                      labels = c('Before', 'After')) +
+    facet_wrap(vars(site.uni), nrow = 2) +
+    ylab('Percent Cover') +
+    xlab('Month') +
+    # geom_vline(yintercept = Stormdate) +
+    stoopidtheme +
+    theme(legend.position = 'right')
+
+pc1619 <- cover.month.dat %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4')) %>%
+  # filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4', 'SG6', 'SG7', 'SG8', 'SG9')) %>%
+  filter(Month > 4 & Month <10) %>%
+  filter(Year == 2019 | Year == 2016) %>%
+  ggplot(aes(x = Month, y = pc.mean, color = Prepost_fct, fill = Prepost_fct, group = as.factor(Year), shape = as.factor(Year))) +
+    geom_point(aes(fill = Prepost_fct, shape = as.factor(Year)), position = position_dodge(0.6), size = 2.5) +
+    # geom_line(position = position_dodge(0.4)) +
+    geom_errorbar(aes(ymin = pc.mean - se, ymax = pc.mean + se), width = 0.3, position = position_dodge(0.6))+
+    scale_shape_manual(values = c(21, 22, 23, 24),
+                       breaks = c('2013', '2014', '2016', '2019'),
+                       labels = c('2013', '2014', '2016', '2019')) +
+    scale_fill_manual(values = c('grey20', 'white'),
+                      breaks = c('Before', 'After'),
+                      labels = c('Before', 'After')) +
+    scale_color_manual(values = c('grey20', 'grey50'),
+                      breaks = c('Before', 'After'),
+                      labels = c('Before', 'After')) +
+    facet_wrap(vars(site.uni), nrow = 2) +
+    ylab('Percent Cover') +
+    xlab('Month') +
+    # geom_vline(yintercept = Stormdate) +
+    stoopidtheme +
+    theme(legend.position = 'right')
+
+
+
+
+```
+
+Figure by Year
+```{r cover fig, eval = FALSE}
+pcall.p1 <- cover.dat %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4')) %>%
+  ggplot(aes(x = Jday, y = pc.mean, color = site.uni, group = site.uni)) +
+    geom_point() +
+    geom_line() +
+    facet_wrap(vars(Year), nrow = 2) +
+    stoopidtheme +
+    theme(legend.position = 'right')
+
+
+```
+
+Figure by BACI and site
+```{r}
+pcbysite <- cover.month.pp %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4')) %>%
+  ggplot(aes(x = Month, y = pc.mean, 
+                 shape = Hur_pp, color = Hur_pp, fill = Hur_pp)) +
+    geom_point(size = 2.3, position = position_dodge(0.55)) +
+    geom_errorbar(aes(ymin = pc.mean - se, ymax = pc.mean + se), width = 0.3, position = position_dodge(0.55)) +
+    scale_fill_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_linetype_manual(values = c(c('solid', 'solid', 'dashed', 'dashed'), 
+                                     c('gray40', '#6082B6', 'gray40', '#6082B6')), 
+                           breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_shape_manual(values = c(1, 2, 21, 24),
+                     breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    scale_color_manual(values = c('gray40', '#6082B6', 'gray40', '#6082B6'), 
+                      breaks = c('No Storm_Before', 'Hurricane_Before', 
+                                 'No Storm_After', 'Hurricane_After'),
+                      labels = c('Control:Before', 'Impact:Before', 
+                                 'Control:After', 'Impact:After')) +
+    facet_wrap(vars(site.uni), nrow = 2) +
+    ylab('Percent Cover') +
+    xlab('Month') +
+    # geom_hline(yintercept = 0) +
+    stoopidtheme +
+    theme(legend.position = c(0.1, 0.9),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          strip.background = element_blank(),
+          legend.background = element_rect(color = NA),
+          panel.border = element_rect(colour = "black", fill = NA),
+          strip.text.x = element_text(size = 12, color = "black", face = "bold"
+        ))
+pcbysite
+
+```
+Export Figure 6 Seagrass Cover
+```{r, eval = FALSe}
+ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/final/Fig5_Seagrass.tiff",
+       plot = pcbysite, device = 'tiff',
+       width = 8, height = 6, units = "in", dpi = 300)
+
+
+```
+
+Figure by year and BACI
+```{r}
+cover.month.dat %>%
+  filter(site.uni %in% c('SG1', 'SG2', 'SG3', 'SG4')) %>%
+  ggplot(aes(x = Month, y = pc.mean, color = Prepost_fct, fill = Prepost_fct, group = as.factor(Year), shape = as.factor(Year))) +
+    geom_point(position = position_dodge(0.55), size = 2.5) +
+    geom_errorbar(aes(ymin = pc.mean - se, ymax = pc.mean + se), width = 0.3, position = position_dodge(0.55))+
+    scale_fill_manual(values = c('grey20', 'white'),
+                      breaks = c('Before', 'After'),
+                      labels = c('Before', 'After')) +
+    scale_shape_manual(values = c(21, 22, 23, 24),
+                       breaks = c('2013', '2014', '2016', '2019'),
+                       labels = c('2013', '2014', '2016', '2019')) +
+    scale_color_manual(values = c('grey20', 'grey50'),
+                      breaks = c('Before', 'After'),
+                      labels = c('Before', 'After')) +
+    facet_wrap(vars(site.uni), nrow = 2) +
+    ylab('Percent Cover') +
+    xlab('Month') +
+    # geom_vline(yintercept = Stormdate) +
+    stoopidtheme +
+    theme(legend.position = c(0.06, 0.93),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          strip.background = element_blank(),
+          panel.border = element_rect(colour = "black", fill = NA),
+          strip.text.x = element_text(size = 12, color = "black", face = "bold"
+        ))
+
+```
+
+## S8 Table: Temperature and Salinity ANOVA
+Temperature
+```{r}
+# short term
+envspp.dum.maj.23.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Temp, na.rm = TRUE), 
+                   max = max(Temp, na.rm = TRUE), 
+                   mean = mean(Temp, na.rm = TRUE)))
+envspp.dum.maj.23.sg %>%
+  aov(Temp ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+# seasonal
+envspp.dum.maj.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Temp, na.rm = TRUE), 
+                   max = max(Temp, na.rm = TRUE), 
+                   mean = mean(Temp, na.rm = TRUE)))
+envspp.dum.maj.sg %>%
+  aov(Temp ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+```
+
+Salinity
+```{r}
+# short term
+envspp.dum.maj.23.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Sal, na.rm = TRUE), 
+                   max = max(Sal, na.rm = TRUE), 
+                   mean = mean(Sal, na.rm = TRUE)))
+envspp.dum.maj.23.sg %>%
+  aov(Sal ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+# seasonal
+envspp.dum.maj.sg %>%
+  group_by(Hur_pp) %>%
+  summarise(tibble(min = min(Sal, na.rm = TRUE), 
+                   max = max(Sal, na.rm = TRUE), 
+                   mean = mean(Sal, na.rm = TRUE)))
+envspp.dum.maj.sg %>%
+  aov(Sal ~ Prepost_fctr * Hurricane, data = .) %>%
+  summary(.)
+
+```
+
+
+# NMS
+## NMS Data
+```{r data, include = FALSE}
+library(vegan)
+library(data.table)
+
+# read in data without april and november. These are only data from in seagrasses
+envspp.dum <- read.csv('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Hurricane_Impacts_on_Fishes/Community_Analysis/data/2021_Clean/envspp_dum_sg_7May21.csv', header = TRUE, row.names = 1, sep = ',')
+# create the BACI treatment column
+envspp.dum <- envspp.dum %>%
+  unite('Hur_pp', Hurricane, Prepost_fctr, remove = FALSE)
+envspp.dum$Hur_pp <- factor(envspp.dum$Hur_pp, levels = c("No Storm_Before", "Hurricane_Before", "No Storm_After", "Hurricane_After"))
+envspp.dum$Hurricane <- factor(envspp.dum$Hurricane, levels = c("No Storm", 'Hurricane'))
+envspp.dum$Prepost_fctr <- factor(envspp.dum$Prepost_fctr, levels = c("Before", 'After'))
+
+# These are already samples only in seagrasses
+spp.fish <- read.csv('/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/Hurricane_Impacts_on_Fishes/Community_Analysis/data/2021_Clean/spp.fish.sg_7May21.csv', header = TRUE, row.names = 1, sep = ',')
+```
+
+### Major Storms Only
+1. Filter out the "out of peak season" storms (removes Matthew and Arthur).
+   Datasets = envspp.dum.maj, spp.fish.maj
+```{r filter major storms, include = FALSE}
+# 1. Only Irene, Florence and Dorian as Hurricane Years
+##### Datasets: envspp.dum.maj, spp.fish.maj
+envspp.dum.maj <- envspp.dum %>%
+  dplyr::filter(Year != 2014 & Year != 2016 & Year != 2010 & Year != 2012) %>%
+  droplevels()
+# this also drops all the mudflat trawls from the spp dataset
+spp.fish.maj <- spp.fish %>%
+  rownames_to_column('Tow.ID')
+
+spp.fish.maj <- spp.fish.maj %>%
+  dplyr::filter(spp.fish.maj$Tow.ID %in% envspp.dum.maj$Tow.ID ) %>%
+  column_to_rownames('Tow.ID')
+```
+
+### Short time Span
+#### Data
+2. Filter to only the samples one month before and after in major storm years
+   Datasets = envspp.dum.maj.mth, spp.fish.maj.mth
+```{r month, include = FALSE}
+## 2. Samples within 23 days of storm impact
+envspp.dum.maj.23 <- envspp.dum.maj %>%
+  dplyr::filter(between(as.integer(Prepost_num), -23, 23))
+
+spp.fish.maj.23 <- spp.fish.maj %>%
+  rownames_to_column('Tow.ID')
+spp.fish.maj.23 <- spp.fish.maj.23 %>%
+  dplyr::filter(spp.fish.maj.23$Tow.ID %in% envspp.dum.maj.23$Tow.ID ) %>%
+  column_to_rownames('Tow.ID')
+
+```
+
+3. Check how this has affected rare species (short-term data) and remove all species with no counts
+```{r remove rare, echo = FALSE}
+# dim(spp.fish.maj.23)  # 165 x 80
+# colSums(spp.fish.maj.23)
+# which(numcolwise(sum)(spp.fish.maj.23) < 1)  # these are the cols 
+
+# drop the spp with counts of one and less
+spp.fish.maj.23 <- spp.fish.maj.23[, -which(numcolwise(sum)(spp.fish.maj.23) < 2)]
+# dim(spp.fish.maj.23)  # 165 x 43
+
+# check if there are any trawls that caught nothing?
+# rowSums(spp.fish.maj.23)
+# which(rowSums(spp.fish.maj.23) < 1)  # there are none
+
+
+```
+
+#### 2D NMS without outlier trawls: 23 days
+Identify and drop trawls that only caught one thing total
+```{r 4rt BCD mth NMS calc, echo = TRUE}
+### Drop trawls that caught only one thing
+# id which tows 
+which(rowSums(spp.fish.maj.23) < 2)  # towid 1290, also appeared as an outlier in 1st NMS
+# spp.fish.maj.23[58, ]  # only caught 1 pigfish
+
+
+# drop those tows
+spp.fish.maj.23.out <- spp.fish.maj.23 %>%
+  rownames_to_column('Tow.ID') %>%
+  filter(!Tow.ID %in% c(1290)) %>%
+  column_to_rownames(var = 'Tow.ID')
+
+# match the env dataset
+## Match env dataset
+envspp.dum.maj.23.out <- envspp.dum.maj.23 %>%
+   filter(!Tow.ID %in% c(1290))
+dim(envspp.dum.maj.23.out) # 164 x 51
+
+# MAke sure there are no species that never appear
+# also shows again how hevaily dominated that data is by pinfish... 
+# colSums(spp.fish.maj.23.out)
+
+
+
+```
+
+Look at distb of data to decide how/if to transform
+```{r}
+### look at distn of data, which gets it closest to normal?
+# par(mfrow=c(2,3))
+# hist(rowSums(spp.fish.maj.23.out), breaks= 12)
+# hist((rowSums(spp.fish.maj.23.out))^(1/2), breaks = 12)
+# hist((rowSums(spp.fish.maj.23.out))^(1/3), breaks = 12)
+# hist((rowSums(spp.fish.maj.23.out))^(1/4), breaks = 12)  ### go with fourth root
+# hist(log(rowSums(spp.fish.maj.23.out)), breaks = 12)
+
+### wisonsin double relativize first? no. 
+# spp_w_23.out <- wisconsin(spp.fish.maj.23.out)
+### 4th root transform to minimize effects of zeros
+spp_4rt_23.out <- (spp.fish.maj.23.out) ^ (1/4)
+### square root transform
+# spp_2rt_23.out <- (spp.fish.maj.23.out) ^ (1/2)
+### Bray curtis distance with ecodist fxs
+spp.4rt.23.bcd.out <- ecodist::distance(as.matrix(spp_4rt_23.out), method='bray')
+# Extended bray curtis distance-- this did not need to step across anything, so we dont need to use extended distances (no share is still set to TRUE below)
+spp_4rt_23_xbcd.out <- stepacross(spp.4rt.23.bcd.out, path = 'shortest', toolong = 1, trace = TRUE)
+
+```
+
+
+Run the 2D NMS without trawls that caught only 1 thing and without rare species
+```{r}
+### Run the MDS 
+# (Previously tested with just wisc and both wisc + 4th root, lowest stresses came from just 4th root transformation)
+mds.23.b <- metaMDS(spp_4rt_23.out,
+                    distance = 'bray', 
+                    k = 2, try = 200, trymax = 10000, 
+                    engine = 'monoMDS', 
+                    autotransform = TRUE, 
+                    noshare = TRUE, 
+                    stress = 1, 
+                    wascores = TRUE, expand = TRUE, 
+                    trace = TRUE, plot = FALSE, 
+                    # previous.best = mds.23.b, # comment out this line if 1st time running
+                    parallel = getOption('mc.cores'))
+mds.23.b
+# Stress = 0.2210542
+
+## Shepard diagram
+#cloud of pts saturating at 1.0, everything above 1.0 are pairs with stepping stone paths and have bray curtis values greater than 1. Tells you if it is "pretty" good
+# can now look at ordination and say that points that are close together in ordination space are similar
+stressplot(mds.23.b)
+
+plot(mds.23.b, type = 'n')
+orditorp(mds.23.b, display = 'sites')  # shows a few outlier trawls? 4718, 485, 5065, 1565
+
+```
+
+
+Get the PC scores
+```{r mth pca nms, echo = TRUE}
+## Get PC scores
+scores.mds.23.b <- scores(mds.23.b)
+summary(scores.mds.23.b)
+
+# run a PCA on the ordination samples scores, rotates the swarm of points so that axis 1 has most of the variance, axis 2 captures the remaining variability orthogonal to it
+# 2Ds
+mds.23.b.pca<-princomp(scores.mds.23.b) 
+print(mds.23.b.pca)	
+summary(mds.23.b.pca)
+```
+
+
+Look at the potential outliers
+```{r}
+# |---------------------- Outlier exploration: Decision = keep these trawls in.
+# explore potential outliers
+dist <- apply(scores.mds.23.b, 2, function(x) abs(x - median(x)) / mad(x)) %>%
+  apply(1, max)
+# qplot(scores.mds.23.b[, 1], scores.mds.23.b[, 2], color = dist, size = I(3)) + coord_equal() + 
+  # scale_color_viridis_c(trans = "log", breaks = c(1, 3, 6))
+qplot(y = sort(dist, decreasing = TRUE))  # points above a distance of 4 may be outliers
+
+### check mahalanobis distances
+dist2 <- robust::covRob(scores.mds.23.b, estim = "pairwiseGK")$dist
+qplot(dist, sqrt(dist2))
+pval <- pchisq(dist2, df = 10, lower.tail = FALSE)
+hist(pval)
+is.out <- (pval < (0.05 / length(dist2)))  # Bonferroni correction
+sum(is.out)
+
+### check local outlier factor
+llof <- bigutilsr::LOF(scores.mds.23.b)
+qplot(dist2, llof)
+
+### look at what was found in these trawls in particular: the trawls that are being identified as potentially outliers above are those that caught only pinfish or pinfish + 1 burrfish. this is not anomalous. 
+spp.fish %>%
+  rownames_to_column('Tow.ID') %>% 
+  filter(Tow.ID %in% c(4718, 485, 5065, 1565))
+### 4718:  2 pinfish
+### 485: 1 striped burrfish + 7 pinfish
+### 5065: 16 pinfish
+### 1564: 1 jack spp + 1 atl. thread herring + 10 anchovy spp + 13 mojarra + 35 pinfish
+
+# |---------------------- 
+
+```
+
+Get R2 for NMS ordinations ...
+```{r}
+# You have to do this by differencing for NMS, cuz the axes are computed simultaneously:
+# hand calculate the amount of variance on each axis
+# Get OD for 1 AND 2 AND 3 axes (NOT axis 1 OR 2 OR 3).
+# (note this is a Mantel correlation, but done as a Pearson correlation cuz we don't care about the P-value):
+# all rows first col of sample scores, calculate the euclidean distances apart on axis 1
+nms.23.od1 <- dist(scores.mds.23.b[,1]) 
+#same thing for dist on axis 1 and axis 2, did not caluclate the distances on axis 2 because they are dependent on axis 1
+nms.23.od2 <- dist(scores.mds.23.b[,1:2]) 
+
+
+# # axis 1 is OK as is:
+# r1 <- cor(spp.4rt.23.bcd.out, nms.23.od1) 
+# r2.1<-r1^2; r2.1
+# 
+# # axis 2 is 2-D minus 1-D solution:
+# r2<-cor(spp.4rt.23.bcd.out, nms.23.od2)
+# r2.2<-r2^2; r2.2-r2.1; r2.2
+
+```
+
+Get the scores
+```{r nms 2d with ggplot}
+# 1. NMS scores data sheet for sites/samples
+site.scrs <- as.data.frame(scores(mds.23.b, display = "sites")) #save NMDS results into dataframe
+site.scrs <- cbind(site.scrs, Hur_pp = envspp.dum.maj.23.out$Hur_pp) #add grouping variable "Management" to dataframe
+site.scrs <- cbind(site.scrs, Hurricane = as.factor(envspp.dum.maj.23.out$Hurricane)) #add grouping variable of cluster grouping to dataframe
+#site.scrs <- cbind(site.scrs, Site = rownames(site.scrs)) #add site names as variable if you want to display on plot
+## Look at outliers? 1529, 1527, 1018, 972, 1558, 5051
+
+
+# 2. dataset containing species data also needs to be made to look at species vectors.
+spp.fit <- envfit(scores.mds.23.b, spp.fish.maj.23.out, na.rm = TRUE, perm = 999)  # spp vectors
+spp.scrs <- as.data.frame(scores(spp.fit, display = "vectors")) # save species intrinsic values into dataframe
+spp.scrs <- cbind(spp.scrs, Species = rownames(spp.scrs)) # add species names to dataframe
+spp.scrs <- cbind(spp.scrs, pval = spp.fit$vectors$pvals) # add pvalues to dataframe so you can select species which are significant
+# spp.scrs<- cbind(spp.scrs, abrev = abbreviate(spp.scrs$Species, minlength = 6)) #abbreviate species names
+sig.spp.scrs <- subset(spp.scrs, pval<=0.05) #subset data to show species significant at 0.05
+
+# 3. To show environmental extrinsic variables another datasheet needs to be created
+ef.2d <- envfit(scores.mds.23.b, envspp.dum.maj.23.out[,c(14:16, 33, 36, 41, 42, 44:46, 48, 49)], na.rm = TRUE, perm = 999)  
+env.scores <- as.data.frame(scores(ef.2d, display = "vectors")) # extracts relevant scores from envifit
+env.scores <- cbind(env.scores, env.variables = rownames(env.scores)) # and then gives them their names
+env.scores <- cbind(env.scores, pval = ef.2d$vectors$pvals) # add pvalues to dataframe
+sig.env.scrs <- subset(env.scores, pval<=0.10) # subset data to show variables significant at 0.1
+
+# Look at the correlations within each axis specifically 
+library(lineup)
+cor.4rt.2d <- corbetw2mat(scores.mds.23.b, envspp.dum.maj.23.out[ ,c(14:16, 33, 36, 41, 42, 44:46, 48, 49)], what = c("all"))
+print(cor.4rt.2d, digits = 3)
+
+
+# 4. Look at factors
+factorfit(scores.mds.23.b, envspp.dum.maj.23.out[ , 38], na.rm = TRUE, perm = 999)
+```
+
+4. NMS PLOT: Short-term
+```{r}
+nms.2d.p2 <- ggplot(site.scrs, aes(x=NMDS1, y=NMDS2)) + #sets up the plot
+  geom_point(aes(NMDS1, NMDS2, shape = Hur_pp, fill = Hur_pp, colour = Hur_pp), size = 3) + #adds site points to plot, shape determined by Hurricane, colour determined by Hur_pp
+  # coord_fixed() +
+  theme_classic() + 
+  theme(panel.background = element_rect(fill = NA, colour = "black", size = 1, linetype = "solid")) +
+  # labs( shape = "Hur_PP", color = 'Hur_PP') + # add legend labels 
+  scale_shape_manual(values = c(1, 16, 2, 17),
+            breaks = c('No Storm_Before', 'No Storm_After', 'Hurricane_Before', 'Hurricane_After'),
+            labels = c('No Storm/Before', 'No Storm/After', 'Hurricane/Before', 'Hurricane/After')) +
+  scale_fill_manual(values = c('grey50', 'grey50', '#6082B6', '#6082B6'),
+            breaks = c('No Storm_Before', 'No Storm_After', 'Hurricane_Before', 'Hurricane_After'),
+            labels = c('No Storm/Before', 'No Storm/After', 'Hurricane/Before', 'Hurricane/After')) +
+  scale_color_manual(values = c('grey50', 'grey50', '#6082B6', '#6082B6'),
+            breaks = c('No Storm_Before', 'No Storm_After', 'Hurricane_Before', 'Hurricane_After'),
+            labels = c('No Storm/Before', 'No Storm/After', 'Hurricane/Before', 'Hurricane/After')) +
+  theme(legend.position = "right", 
+        legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 12), 
+        axis.text = element_text(size = 10))# add legend at right of plot
+nms.2d.p2 + labs(title = "23 Days") #displays plot
+
+# 5. NMS with signif spp (this is very messy)
+nms.2d.p2.spp <- nms.2d.p2 +
+  geom_segment(data = sig.spp.scrs, aes(x = 0, xend=NMDS1, y=0, yend=NMDS2), arrow = arrow(length = unit(0.25, "cm")), colour = "grey10", lwd=0.3) + #add vector arrows of significant species
+  ggrepel::geom_text_repel(data = sig.spp.scrs, aes(x=NMDS1, y=NMDS2, label = Species), cex = 3, direction = "both", segment.size = 0.25)+ #add labels for species, use ggrepel::geom_text_repel so that labels do not overlap
+  labs(title = "Ordination with species vectors")
+
+
+# 6. NMS with signif env vectors, color coded points
+nms.2d.p2.ef <- nms.2d.p2+
+  geom_segment(data = sig.env.scrs, 
+               aes(x = 0, xend=NMDS1+.75, y=0, yend=NMDS2+.75), 
+               arrow = arrow(length = unit(0.3, "cm")), 
+               colour = "grey10", lwd=0.3) + #add vector arrows of significant env variables
+ # ggrepel::geom_text_repel(data = sig.env.scrs, aes(x=NMDS1+.65, y=NMDS2+0.7, label = c('Temp', 'Year', 'Rain Anom')), cex = 4, direction = "both", segment.size = 0.25)+ #add labels for env variables
+  annotate(geom="text", x=0.85, y=0.35, label="Temp", color="black") +
+  labs(title="Stress = 0.22") +
+theme(legend.position = c(0.88, 0.12), 
+        legend.text = element_text(size = 9), 
+        legend.title = element_blank(), 
+        title = element_text(size = 11),
+        axis.text = element_text(size = 11))
+
+# Add centroids
+scrs.23 <- scores(mds.23.b, display = "sites", "species")
+cent.23 <- aggregate(scrs.23 ~ envspp.dum.maj.23.out$Hur_pp, FUN = "mean")
+names(cent.23) [-1] <- colnames(scrs.23)
+cent.23 <- cent.23 %>%
+  rename('Treatment' = 'envspp.dum.maj.23.out$Hur_pp')
+nms.2d.p2.ef.ctr <- nms.2d.p2.ef +
+  geom_point(data = cent.23, aes(NMDS1, NMDS2), pch = c(1, 2, 16, 17), col = '#FE6100', cex = 4)
+  # geom_text(data = cent.23, aes(x=NMDS1, y=NMDS2, label = Treatment), cex = 4, col = 'red') # add labels for env variables
+nms.2d.p2.ef.ctr
+
+## look at species means
+# nms.2d.p2.spp.ctr <- nms.2d.p2.spp +
+#   geom_point(data = cent.23, aes(NMDS1, NMDS2), pch = c(1, 2, 16, 17), col = 'red', cex = 4)
+#   # geom_text(data = cent.23, aes(x=NMDS1, y=NMDS2, label = Treatment), cex = 4, col = 'red') # add labels for env variables
+# nms.2d.p2.spp.ctr
+
+# 7. Save this file
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/drafts/NMS23_color.tiff", width = 8.5, height = 4.8, units = "in", dpi = 300)
+```
+
+5. Post-processing Stats: ANOSIM and Adonis 
+```{r stats, echo = TRUE}
+### Betadisper: multivariate homogeneity of group dispersions (variances)
+bd.23 <- betadisper(spp_4rt_23_xbcd.out, envspp.dum.maj.23.out$Hur_pp, type = 'centroid')
+bd.23
+anova(bd.23) # p=0.3676 therefore the group dispersions are homogenous/ "Null hypothesis of no difference in dispersion between groups"
+TukeyHSD(bd.23)
+plot(bd.23)
+
+
+### Visualize the betadisper
+# extract the centroids and the site points in multivariate space.  
+centroids<-data.frame(grps=rownames(bd.23$centroids),data.frame(bd.23$centroids))
+disp.vectors<-data.frame(group=bd.23$group,data.frame(bd.23$vectors))
+
+# to create the lines from the centroids to each point we will put it in a format that ggplot can handle
+seg.data<-cbind(disp.vectors[,1:3],centroids[rep(1:nrow(centroids),as.data.frame(table(disp.vectors$group))$Freq),2:3])
+names(seg.data)<-c("group","v.PCoA1","v.PCoA2","PCoA1","PCoA2")
+
+# create the convex hulls of the outermost points
+grp1.hull<-seg.data[seg.data$group=="No Storm_Before",1:3][chull(seg.data[seg.data$group=="No Storm_Before",2:3]),]
+grp2.hull<-seg.data[seg.data$group=="No Storm_After",1:3][chull(seg.data[seg.data$group=="No Storm_After",2:3]),]
+grp3.hull<-seg.data[seg.data$group=="Hurricane_Before",1:3][chull(seg.data[seg.data$group=="Hurricane_Before",2:3]),]
+grp4.hull<- seg.data[seg.data$group=="Hurricane_After",1:3][chull(seg.data[seg.data$group=="Hurricane_After",2:3]),]
+all.hull<-rbind(grp1.hull,grp2.hull,grp3.hull, grp4.hull)
+
+pcoa.disp.23 <- ggplot() +
+  geom_polygon(data=all.hull,aes(x=v.PCoA1,y=v.PCoA2),colour="black",alpha=0,linetype="dashed") +
+  geom_point(data=seg.data, aes(x=v.PCoA1,y=v.PCoA2, color = group, shape =  group, group = group),size=2) +
+  facet_wrap(vars(group)) +
+  stoopidtheme +
+  theme(legend.position="none")
+pcoa.disp.23
+
+##### ANOSIM #####
+ano.23 <- anosim(spp_4rt_23_xbcd.out, grouping = envspp.dum.maj.23.out$Hur_pp, permutations = 999, parallel = getOption('mc.cores'))
+summary(ano.23)
+plot(ano.23)
+# ANOSIM statistic R: 0.1522
+#       Significance: 0.001
+
+#### Adonis / PERMANOVA####
+ad.mth <- adonis2(spp_4rt_23_xbcd.out ~ Hurricane * Prepost_fctr, data = envspp.dum.maj.23.out )
+ad.mth
+
+ad.mth.pp <- adonis2(spp_4rt_23_xbcd.out ~ Hur_pp, data = envspp.dum.maj.23.out )
+ad.mth.pp
+```
+
+Indicator spp analysis
+```{r indicspp, echo = FALSE}
+# is.factor(envspp.dum.maj.23.out$Hur_pp)
+# is.factor(envspp.dum.maj.23.out$Hurricane)
+# envspp.dum.maj.23.out$Hurricane <- as.factor(envspp.dum.maj.23$Hurricane)
+
+### Simper with vegan
+# gives the contribution of each species to overall dissimilarities, but these are caused by variation in species abundances, and only partly by differences among groups
+# average	= Species contribution to average between-group dissimilarity
+## Hurricane vs Control Years
+sim <- vegan::simper(spp_4rt_23.out, envspp.dum.maj.23.out$Hurricane)
+(sim <- with(envspp.dum.maj.23.out, simper(spp_4rt_23.out, Hurricane)))
+sim
+summary(sim, digits = max(4), ordered = TRUE)
+## BACI groups
+sim.pp <- simper(spp_4rt_23.out, envspp.dum.maj.23.out$Hur_pp)
+sim.pp
+summary(sim.pp, digits = max(4), ordered = TRUE)
+
+### with indicspecies, dont need to transform??
+library(indicspecies)
+##### by hurricane vs control year
+ind <- multipatt(spp_4rt_23.out, envspp.dum.maj.23.out$Hurricane, func = "r.g")
+summary(ind)
+summary(ind, indvalcomp = TRUE)
+
+#####  by BACI Group
+ind.pp <- multipatt(spp.fish.maj.23.out, envspp.dum.maj.23.out$Hur_pp, 
+                    restcomb=c(1, 2, 3, 4, 5, 6, 9))
+summary(ind.pp)
+summary(ind.pp, ind.ppvalcomp = TRUE)
+# examine the indicator spp for hur_pp associated with hurricane_after specifically
+ind.pp.spp <- indicators(spp_4rt_23.out, cluster = envspp.dum.maj.23.out$Hur_pp, group = 'Hurricane_After')
+print(ind.pp.spp) %>%
+  filter(p.value<0.05)
+
+
+spp.fish.maj.23.a <- cbind(spp.fish.maj.23, envspp.dum.maj.23$Hur_pp)
+spp.fish.maj.23.a %>%
+  group_by(envspp.dum.maj.23$Hur_pp) %>%
+  summarise_each(funs(sum)) %>%
+  transpose(., keep.names = 'species')
+
+which(colSums(spp.fish.maj.23.out) == 0)
+
+spp.diss <- bind_cols(sim.pp[["Hurricane_Before_Hurricane_After"]][["species"]],
+                  sim.pp[["Hurricane_Before_Hurricane_After"]][["average"]],
+                  sim.pp[["Hurricane_After_No Storm_Before"]][["average"]],
+                  sim.pp[["Hurricane_After_No Storm_After"]][["average"]],
+                  sim.pp[["Hurricane_Before_No Storm_Before"]][["average"]],
+                  sim.pp[["No Storm_Before_No Storm_After"]][["average"]],
+                  sim.pp[["Hurricane_Before_No Storm_After"]][["average"]])
+colnames(spp.diss) <- c('Species', "HurB4_HurAft", 'NSB4_HurAft', 'NSAft_HurAft', 'HurB4_NSB4', 'NSB4_NSAft', 'HurB4_NSAft')
+spp.diss %>%
+  arrange(desc(HurB4_HurAft))
+
+```
+
+
+
+## Seasonal (April - October) NMS
+### Data
+Check how many rare species are in the seasonal dataset
+```{r}
+# check how many trawls and spp
+dim(spp.fish.maj)  # 654 x 79
+# check how often each species was caught
+colSums(spp.fish.maj)
+which(numcolwise(sum)(spp.fish.maj) < 1)
+# spp.fish.maj[, c(8, 27, 30, 37, 39, 53, 55, 67, 75, 79)]
+
+# drop the spp with counts of one and less (rare)
+spp.fish.maj <- spp.fish.maj[, -which(numcolwise(sum)(spp.fish.maj) < 2)]
+dim(spp.fish.maj)  # 654 x 59
+
+
+## check if there are any trawls that caught nothing?
+# rowSums(spp.fish.maj)
+which(rowSums(spp.fish.maj) < 1)  # there are none
+
+```
+
+Transform the data w/o rare spp and calculate distance matrix
+```{r}
+
+### look at distn of data, which gets it closest to normal?
+# par(mfrow=c(2,3))
+# hist(rowSums(spp.fish.maj), breaks= 12)
+# hist((rowSums(spp.fish.maj))^(1/2), breaks = 12)
+# hist((rowSums(spp.fish.maj))^(1/3), breaks = 12)
+# hist((rowSums(spp.fish.maj))^(1/4), breaks = 12)  ### go with fourth root
+# hist(log(rowSums(spp.fish.maj)), breaks = 12)
+
+### 4th root transform to minimize effects of zeros
+spp_4rt_yr <- (spp.fish.maj) ^ (1/4)
+# Bray curtis distance with ecodist fxs
+spp.4rt.bcd <- ecodist::distance(as.matrix(spp_4rt_yr), method='bray')
+# Extended bray curtis distance (0.2% of trawls)
+spp_4rt_yr_xbcd <- stepacross(spp.4rt.bcd, path = 'shortest', toolong = 1, trace = TRUE)
+```
+
+### Seasonal NMS
+Examine the trawls that only caught one thing
+```{r}
+# Look at trawls that only caught one thing total
+which(rowSums(spp.fish.maj) < 2)  
+# spp.fish.maj[c(102, 137, 245), ]
+### 510: 1 mojarra
+### 583: 1 pinfish
+### 1290: 1 pigfish
+
+# drop those tows
+spp.fish.maj.out <- spp.fish.maj %>%
+  rownames_to_column('Tow.ID') %>%
+  filter(!Tow.ID %in% c(510, 583, 1290)) %>%
+  column_to_rownames(var = 'Tow.ID')
+
+# match the env dataset
+## Match env dataset
+envspp.dum.maj.out <- envspp.dum.maj %>%
+   filter(!Tow.ID %in% c(510, 583, 1290))
+dim(envspp.dum.maj.out) # 651 x 51
+
+```
+
+
+Transform/Relativize the data
+```{r}
+### Wisconsin
+# spp_4rt_w.out <- wisconsin(spp.fish.maj.out)
+
+### look at distn of data, which gets it closest to normal?
+par(mfrow=c(2,3))
+hist(rowSums(spp.fish.maj.out), breaks= 12)
+hist((rowSums(spp.fish.maj.out))^(1/2), breaks = 12)
+hist((rowSums(spp.fish.maj.out))^(1/3), breaks = 12)
+hist((rowSums(spp.fish.maj.out))^(1/4), breaks = 12)  ### go with fourth root
+hist(log(rowSums(spp.fish.maj.out)), breaks = 12)
+
+### 4th root transform to minimize effects of zeros
+spp_4rt_yr.out <- (spp.fish.maj.out) ^ (1/4)
+### Bray curtis distance with ecodist fxs
+spp.4rt.yr.bcd.out <- ecodist::distance(as.matrix(spp_4rt_yr.out), method='bray')
+# Extended bray curtis distance-- this did not need to step across anything, so we dont need to use extended distances (no share is still set to TRUE below)
+spp_4rt_yr_xbcd.out <- stepacross(spp.4rt.yr.bcd.out, path = 'shortest', toolong = 1, trace = TRUE)
+
+```
+
+Run the NMDS
+```{r}
+
+# this takes ~ 10 mins to do 500 runs
+yr.mds1.b <- metaMDS(spp_4rt_yr.out, 
+                         distance = 'bray', 
+                         k = 2, try = 200, trymax = 2000, 
+                         engine = 'monoMDS', 
+                         autotransform = FALSE, 
+                         noshare = TRUE, 
+                         stress = 1, 
+                         wascores = TRUE, expand = TRUE, 
+                         trace = TRUE, plot = FALSE, 
+                         # previous.best = yr.mds1.b,  # comment out if running for the first time
+                         parallel = getOption('mc.cores'))
+
+yr.mds1.b   # Stress: 0.2347762 
+
+stressplot(yr.mds1.b)
+
+plot(yr.mds1.b, type = 'n')
+orditorp(yr.mds1.b, display = 'sites') 
+
+
+```
+
+Post processing of NMDS
+-- Get PC scores
+```{r}
+
+scores.yr.mds1.b <- scores(yr.mds1.b)
+summary(scores.yr.mds1.b)
+
+# run a PCA on the ordination samples scores, rotates the swarm of points so that axis 1 has most of the variance, axis 2 captures the remaining variability orthogonal to it
+# 2Ds
+yr.mds1.b.pca<-princomp(scores.yr.mds1.b) 
+print(yr.mds1.b.pca)	
+summary(yr.mds1.b.pca)
+```
+
+--Look at the potential outliers
+```{r}
+# |---------------------- Outlier exploration: Decision = keep these trawls in.
+# explore potential outliers
+dist <- apply(scores.yr.mds1.b, 2, function(x) abs(x - median(x)) / mad(x)) %>%
+  apply(1, max)
+# qplot(scores.mds.23.b[, 1], scores.mds.23.b[, 2], color = dist, size = I(3)) + coord_equal() + 
+  # scale_color_viridis_c(trans = "log", breaks = c(1, 3, 6))
+qplot(y = sort(dist, decreasing = TRUE))  # doesnt look like there are any obvious outliers
+
+### check mahalanobis distances
+dist2 <- robust::covRob(scores.yr.mds1.b, estim = "pairwiseGK")$dist
+qplot(dist, sqrt(dist2))
+pval <- pchisq(dist2, df = 10, lower.tail = FALSE)
+hist(pval)
+is.out <- (pval < (0.05 / length(dist2)))  # Bonferroni correction
+sum(is.out)
+
+### check local outlier factor
+llof <- bigutilsr::LOF(scores.yr.mds1.b)
+qplot(dist2, llof)
+
+### look at what was found in these trawls in particular: the trawls that are being identified as potentially outliers above are those that caught only pinfish or pinfish + 1 burrfish. this is not anomalous. 
+spp.fish %>%
+  rownames_to_column('Tow.ID') %>% 
+  filter(Tow.ID %in% c(4718))
+### 4718:  2 pinfish
+
+# |---------------------- 
+
+```
+
+-- Get R2 for NMS ordinations ..
+```{R}
+# .
+# You have to do this by differencing for NMS, cuz the axes are computed simultaneously:
+# hand calculate the amount of variance on each axis
+# Get OD for 1 AND 2 AND 3 axes (NOT axis 1 OR 2 OR 3).
+# (note this is a Mantel correlation, but done as a Pearson correlation cuz we don't care about the P-value):
+# all rows first col of sample scores, calculate the euclidean distances apart on axis 1
+nms.yr.od1 <- dist(scores.yr.mds1.b[,1]) 
+#same thing for dist on axis 1 and axis 2, did not caluclate the distances on axis 2 because they are dependent on axis 1
+nms.yr.od2 <- dist(scores.yr.mds1.b[,1:2]) 
+
+
+# # axis 1 is OK as is:
+# r1 <- cor(spp.4rt.yr.bcd.out, nms.yr.od1) 
+# r2.1<-r1^2; r2.1   # 0.557991
+# 
+# # axis 2 is 2-D minus 1-D solution:
+# r2<-cor(spp.4rt.yr.bcd.out, nms.yr.od2)
+# r2.2<-r2^2; r2.2-r2.1; r2.2   # 0.185551, 0.7435421
+
+
+
+```
+
+Making the Figure
+```{r}
+# 1. NMS scores data sheet for sites/samples
+site.scrs.yr <- as.data.frame(scores(yr.mds1.b, display = "sites")) #save NMDS results into dataframe
+site.scrs.yr <- cbind(site.scrs.yr, Hur_pp = envspp.dum.maj.out$Hur_pp) #add grouping variable "Management" to dataframe
+site.scrs.yr <- cbind(site.scrs.yr, Hurricane = as.factor(envspp.dum.maj.out$Hurricane)) #add grouping variable of cluster grouping to dataframe
+#site.scrs.yr <- cbind(site.scrs.yr, Site = rownames(site.scrs.yr)) #add site names as variable if you want to display on plot
+## Look at outliers? 1529, 1527, 1018, 972, 1558, 5051
+
+
+# 2. dataset containing species data also needs to be made to look at species vectors.
+spp.fit.yr <- envfit(scores.yr.mds1.b, spp.fish.maj.out, na.rm = TRUE, perm = 999)  # spp vectors
+spp.scrs.yr <- as.data.frame(scores(spp.fit.yr, display = "vectors")) # save species intrinsic values into dataframe
+spp.scrs.yr <- cbind(spp.scrs.yr, Species = rownames(spp.scrs.yr)) # add species names to dataframe
+spp.scrs.yr <- cbind(spp.scrs.yr, pval = spp.fit.yr$vectors$pvals) # add pvalues to dataframe so you can select species tjat are significant
+#spp.scrs.yr<- cbind(spp.scrs.yr, abrev = abbreviate(spp.scrs.yr$Species, minlength = 6)) #abbreviate species names
+sig.spp.scrs.yr <- subset(spp.scrs.yr, pval<=0.05) #subset data to show species significant at 0.05
+
+
+# 3. To show environmental extrinsic variables another datasheet needs to be created
+# envspp.dum.maj.out$Hur_pp<- droplevels(envspp.dum.maj.out$Hur_pp)
+  
+ef.2d.yr <- envfit(scores.yr.mds1.b, envspp.dum.maj.out[,c(14:16, 33, 36, 41, 42, 44:46, 48, 49)], na.rm = TRUE, perm = 999)  
+env.scores.yr <- as.data.frame(scores(ef.2d.yr, display = "vectors")) #extracts relevant scores from envifit
+env.scores.yr <- cbind(env.scores.yr, pval = ef.2d.yr$vectors$pvals) # add pvalues to dataframe
+# baci.ctr <- cbind(ef.2d.yr$factors$centroids, )
+# env.scores.yr <- rbind(env.scores.yr, ef.2d.yr$factors$centroids)
+env.scores.yr <- cbind(env.scores.yr, env.variables = rownames(env.scores.yr)) #and then gives them their names
+sig.env.scrs.yr <- subset(env.scores.yr, pval<=0.1) #subset data to show variables significant at 0.05
+
+# Look at the correlations within each axis specifically 
+library(lineup)
+cor.4rt.2d <- corbetw2mat(scores.yr.mds1.b, envspp.dum.maj.out[ ,c(14:16, 33, 36, 41, 42, 44:46, 48, 49)], what = c("all"))
+print(cor.4rt.2d, digits = 3)
+
+
+
+```
+
+NMS Year plot without outliers
+```{r}
+nms.2d.yr.p2 <- ggplot(site.scrs.yr, aes(x=NMDS1, y=NMDS2)) + #sets up the plot
+  geom_point(aes(NMDS1, NMDS2, shape = Hur_pp, fill = Hur_pp, colour = Hur_pp), size = 3) + #adds site points to plot, shape determined by Hurricane, colour determined by Hur_pp
+  # coord_fixed() +
+  theme_classic() + 
+  theme(panel.background = element_rect(fill = NA, colour = "black", size = 1, linetype = "solid")) +
+  # labs( shape = "Hur_PP", color = 'Hur_PP') + # add legend labels 
+  scale_shape_manual(values = c(1, 2, 16, 17),
+            breaks = c('No Storm_Before', 'Hurricane_Before', 'No Storm_After', 'Hurricane_After'),
+            labels = c('Control:Before', 'Impact:Before', 'Control:After', 'Impact:After')) +
+  scale_fill_manual(values = c('grey50', '#6082B6', 'grey50', '#6082B6'),
+            breaks = c('No Storm_Before', 'Hurricane_Before', 'No Storm_After', 'Hurricane_After'),
+            labels = c('Control:Before', 'Impact:Before', 'Control:After', 'Impact:After')) +
+  scale_color_manual(values = c('grey50',  '#6082B6', 'grey50', '#6082B6'),
+            breaks = c('No Storm_Before', 'Hurricane_Before', 'No Storm_After', 'Hurricane_After'),
+            labels = c('Control:Before', 'Impact:Before', 'Control:After', 'Impact:After')) +
+  theme(legend.position = "right", 
+        legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 12), 
+        axis.text = element_text(size = 10))# add legend at right of plot
+nms.2d.yr.p2  #displays plot
+
+# 5. NMS with signif spp (this is very messy)
+# nms.2d.p +
+#   geom_segment(data = sig.spp.scrs, aes(x = 0, xend=NMDS1, y=0, yend=NMDS2), arrow = arrow(length = unit(0.25, "cm")), colour = "grey10", lwd=0.3) + #add vector arrows of significant species
+#   ggrepel::geom_text_repel(data = sig.spp.scrs, aes(x=NMDS1, y=NMDS2, label = Species), cex = 3, direction = "both", segment.size = 0.25)+ #add labels for species, use ggrepel::geom_text_repel so that labels do not overlap
+#   labs(title = "Ordination with species vectors")
+
+
+# 6. NMS with signif env vectors, color coded points
+nms.2d.yr.p2.ef <- nms.2d.yr.p2 +
+  geom_segment(data = sig.env.scrs.yr, 
+               aes(x = 0, xend=NMDS1+0.55, y=0, yend=NMDS2+0.55), 
+               arrow = arrow(length = unit(0.3, "cm")), 
+               colour = "grey10", lwd=0.5) + #add vector arrows of significant env variables
+ # ggrepel::geom_text_repel(data = sig.env.scrs.yr, aes(x=NMDS1+0.75, y=NMDS2+0.75, label = env.variables), cex = 4, direction = "both", segment.size = 0.25) + #add labels for env variables
+  annotate(geom="text", x=0.3, y=1.2, label="Days since storm", color="black") +
+  annotate(geom="text", x=0.45, y=0.95, label="Ante rain", color="black") +
+  annotate(geom="text", x=0.55, y=0.78, label="Temp", color="black") +
+  annotate(geom="text", x=0.75, y=0.51, label="Storm surge", color="black") +
+  annotate(geom="text", x=0.75, y=0.42, label="Gusts", color="black") +
+  annotate(geom="text", x=0.8, y=0.32, label="ACE", color="black") +
+  ylim(-1, 1.5) + 
+  xlim(-1.75, 1) +
+  labs(title="Stress = 0.23") +
+  theme(legend.position = c(0.88, 0.12), 
+        legend.text = element_text(size = 9), 
+        legend.title = element_blank(), 
+        title = element_text(size = 11),
+        axis.text = element_text(size = 11))
+nms.2d.yr.p2.ef
+
+
+# Add centroids
+scrs <- scores(yr.mds1.b, display = "sites", "species")
+cent <- aggregate(scrs ~ envspp.dum.maj.out$Hur_pp, FUN = "mean")
+names(cent) [-1] <- colnames(scrs)
+cent <- cent %>%
+  rename('Treatment' = 'envspp.dum.maj.out$Hur_pp')
+
+
+nms.2d.yr.p2.ef.ctr <- nms.2d.yr.p2.ef +
+  geom_point(data = cent, aes(NMDS1, NMDS2), pch = c(1, 2, 16, 17), col = '#FE6100', cex = 4)
+  # geom_text(data = cent, aes(x=NMDS1, y=NMDS2, label = Treatment), cex = 4, col = 'red') #add labels for env variables
+nms.2d.yr.p2.ef.ctr
+
+```
+
+
+5. Post-processing Stats: ANOSIM and Adonis 
+```{r stats, echo = TRUE}
+### Betadisper: multivariate homogeneity of group dispersions (variances)
+bd.yr <- betadisper(spp_4rt_yr_xbcd.out, envspp.dum.maj.out$Hur_pp, type = 'centroid')
+bd.yr
+anova(bd.yr) # p=4.268e-05 therefore the group dispersions are NOT homogenous/ "evidence against the Null hypothesis of no difference in dispersion between groups"
+TukeyHSD(bd.yr)
+plot(bd.yr)
+
+
+### Visualize the betadisper
+# extract the centroids and the site points in multivariate space.  
+centroids<-data.frame(grps=rownames(bd.yr$centroids),data.frame(bd.yr$centroids))
+disp.vectors<-data.frame(group=bd.yr$group,data.frame(bd.yr$vectors))
+
+# to create the lines from the centroids to each point we will put it in a format that ggplot can handle
+seg.data<-cbind(disp.vectors[,1:3],centroids[rep(1:nrow(centroids),as.data.frame(table(disp.vectors$group))$Freq),2:3])
+names(seg.data)<-c("group","v.PCoA1","v.PCoA2","PCoA1","PCoA2")
+
+# create the convex hulls of the outermost points
+grp1.hull<-seg.data[seg.data$group=="No Storm_Before",1:3][chull(seg.data[seg.data$group=="No Storm_Before",2:3]),]
+grp2.hull<-seg.data[seg.data$group=="No Storm_After",1:3][chull(seg.data[seg.data$group=="No Storm_After",2:3]),]
+grp3.hull<-seg.data[seg.data$group=="Hurricane_Before",1:3][chull(seg.data[seg.data$group=="Hurricane_Before",2:3]),]
+grp4.hull<- seg.data[seg.data$group=="Hurricane_After",1:3][chull(seg.data[seg.data$group=="Hurricane_After",2:3]),]
+all.hull<-rbind(grp1.hull,grp2.hull,grp3.hull, grp4.hull)
+
+pcoa.disp.yr <- ggplot() +
+  geom_polygon(data=all.hull,aes(x=v.PCoA1,y=v.PCoA2),colour="black",alpha=0,linetype="dashed") +
+  geom_point(data=seg.data, aes(x=v.PCoA1,y=v.PCoA2, color = group, shape =  group, group = group),size=2) +
+  facet_wrap(vars(group)) +
+  stoopidtheme +
+  theme(legend.position="none")
+pcoa.disp.yr
+
+##### ANOSIM #####
+ano.yr <- anosim(spp_4rt_yr_xbcd.out, grouping = envspp.dum.maj.out$Hur_pp, permutations = 999, parallel = getOption('mc.cores'))
+summary(ano.yr)
+plot(ano.yr)
+# ANOSIM statistic R: 0.1478
+#       Significance: 0.001
+
+#### Adonis / PERMANOVA####
+ad.yr <- adonis2(spp_4rt_yr_xbcd.out ~ Hurricane * Prepost_fctr, data = envspp.dum.maj.out )
+ad.yr
+
+ad.yr.pp <- adonis2(spp_4rt_yr_xbcd.out ~ Hur_pp, data = envspp.dum.maj.out )
+ad.yr.pp
+```
+
+Indicator spp analysis
+```{r indicspp, echo = FALSE}
+# is.factor(envspp.dum.maj.23.out$Hur_pp)
+# is.factor(envspp.dum.maj.23.out$Hurricane)
+# envspp.dum.maj.23.out$Hurricane <- as.factor(envspp.dum.maj.23$Hurricane)
+
+### Simper with vegan
+# gives the contribution of each species to overall dissimilarities, but these are caused by variation in species abundances, and only partly by differences among groups
+# average	= Species contribution to average between-group dissimilarity
+sim <- vegan::simper(spp_4rt_yr.out, envspp.dum.maj.out$Hurricane)
+sim
+summary(sim, digits = max(4), ordered = TRUE)
+# Look at Hur_pp
+sim.pp <- simper(spp_4rt_yr.out, envspp.dum.maj.out$Hur_pp)
+sim.pp
+summary(sim.pp, digits = max(4), ordered = TRUE)
+
+### with indicspecies
+library(indicspecies)
+ind <- multipatt(spp_4rt_23.out, envspp.dum.maj.23.out$Hurricane, func = "r.g")
+summary(ind)
+summary(ind, indvalcomp = TRUE)
+
+
+# Hur_pp
+ind.pp <- multipatt(spp_4rt_23.out, envspp.dum.maj.23.out$Hur_pp, func = "r.g")
+summary(ind.pp)
+summary(ind.pp, ind.ppvalcomp = TRUE)
+# examine the indicator spp for hur_pp associated with hurricane_after specifically
+ind.pp.spp <- indicators(spp_4rt_23.out, cluster = envspp.dum.maj.23.out$Hur_pp, group = 'Hurricane_After')
+print(ind.pp.spp) %>%
+  filter(p.value<0.05)
+
+
+spp.fish.maj.23.a <- cbind(spp.fish.maj.23, envspp.dum.maj.23$Hur_pp)
+spp.fish.maj.23.a %>%
+  group_by(envspp.dum.maj.23$Hur_pp) %>%
+  summarise_each(funs(sum)) %>%
+  transpose(., keep.names = 'species')
+
+which(colSums(spp.fish.maj.23.out) == 0)
+
+spp.diss <- bind_cols(sim.pp[["Hurricane_Before_Hurricane_After"]][["species"]],
+                  sim.pp[["Hurricane_Before_Hurricane_After"]][["average"]],
+                  sim.pp[["Hurricane_After_No Storm_Before"]][["average"]],
+                  sim.pp[["Hurricane_After_No Storm_After"]][["average"]],
+                  sim.pp[["Hurricane_Before_No Storm_Before"]][["average"]],
+                  sim.pp[["No Storm_Before_No Storm_After"]][["average"]],
+                  sim.pp[["Hurricane_Before_No Storm_After"]][["average"]])
+colnames(spp.diss) <- c('Species', "HurB4_HurAft", 'NSB4_HurAft', 'NSAft_HurAft', 'HurB4_NSB4', 'NSB4_NSAft', 'HurB4_NSAft')
+spp.diss %>%
+  arrange(desc(HurB4_HurAft))
+
+```
+
+
+
+
+
+
+
+### Combo 2d plots (23 days and May-October)
+Save the NMS plots (Figure 3)
+```{r}
+fig3 <- ggarrange(nms.2d.p2.ef.ctr, nms.2d.yr.p2.ef.ctr, 
+          ncol = 2, nrow = 1, labels = c('A', 'B'))
+
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Drafts/Fig3_color.tiff", 
+#        plot = fig3, device = 'tiff',
+#        width = 14, height = 6.5, units = "in", dpi = 300,
+#        compression = 'lzw')
+# 
+# 
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Drafts/Fig3_color2.tiff", 
+#        plot = fig3, device = 'tiff',
+#        width = 7.5, height = 4, units = "in", dpi = 300,
+#        compression = 'lzw')
+```
+
+## Examine Specific Changes in Fish Species
+```{r}
+spp.fish2 <- spp.fish %>%
+  rownames_to_column(var = 'Tow.ID') %>%
+  gather(., species, abundance, no_men_spp:no_das_say, factor_key = TRUE)
+
+envspp.dum.maj.sg2 <- envspp.dum.maj.sg %>%
+  mutate(Tow.ID  = as.character(Tow.ID)) %>%
+  select(Tow.ID, Date, Year, Stormdate, Prepost_num, Hur_pp, Prepost_fctr, Hurricane, rain.anom.cm, StormSurge, ace.nc, Distance) %>%
+  left_join(spp.fish2, by = 'Tow.ID')
+
+## Spots: higher abunds after storms
+envspp.dum.maj.sg2 %>%
+  filter(species == 'no_lei_xan') %>%
+  mutate(cpue.100 = (abundance/Distance)*100) %>%
+  group_by(Hur_pp) %>%
+  summarize(mean = mean(cpue.100))
+  
+
+## Flounders: lower abunds after storms
+envspp.dum.maj.sg2 %>%
+  filter(species == 'no_par_spp') %>%
+  mutate(cpue.100 = (abundance/Distance)*100) %>%
+  group_by(Hur_pp) %>%
+  summarize(mean = mean(cpue.100))
+
+## Sheepshead: higher abunds after storms
+envspp.dum.maj.sg2 %>%
+  filter(species == 'no_arc_pro') %>%
+  mutate(cpue.100 = (abundance/Distance)*100) %>%
+  group_by(Hur_pp) %>%
+  summarize(mean = mean(cpue.100))
+
+## Pinfish: lower abunds after storms
+envspp.dum.maj.sg2 %>%
+  filter(species == 'no_lag_rho') %>%
+  mutate(cpue.100 = (abundance/Distance)*100) %>%
+  group_by(Hur_pp) %>%
+  summarize(mean = mean(cpue.100))
+  
+  
+```
+
+
+
+New Figures?
+```{r}
+## Short-term mBACI figs
+short.figs <- ggarrange(cpue.aov.23 + rremove('xlab'), 
+                        cpuenp.aov.23 + rremove('xlab'), 
+                        rich.aov.23,
+                        labels = 'AUTO', align = 'hv', 
+                        legend = 'top', common.legend = TRUE,
+                        ncol = 1, nrow = 3)
+short.nms <- ggarrange(nms.2d.p2.ef.ctr, labels = 'D', legend = 'top', common.legend = TRUE)
+
+mbaci.short.figs <- ggarrange(short.figs, short.nms, widths = c(0.8,1.5), heights = c (3, 0.7))
+
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Drafts/shortmBACI_figs.tiff",
+#        plot = mbaci.short.figs, device = 'tiff',
+#        width = 7.5, height = 4, units = "in", dpi = 300,
+#        compression = 'lzw')
+
+
+## Season mBACI figs
+aov.season <- ggarrange(cpue.aov.yr + rremove('xlab'), 
+                         cpuenp.aov.yr + rremove('xlab'), 
+                         rich.aov.yr,
+                         labels = 'AUTO', align = 'hv',
+                         legend = 'top', common.legend = TRUE,
+                         ncol = 1, nrow = 3)
+scat.season <- ggarrange(cpue.scat.yr.c + rremove('xlab')  + rremove('ylab'),
+                         cpue.np.scat.yr.c + rremove('xlab') + rremove('ylab'),
+                         rich.scat.yr.c + rremove('ylab'),
+                         labels = c('D', 'E', 'F'), align = 'hv', vjust = c(0, 0.5, 0.5), hjust = 0,
+                         legend = 'top', common.legend = TRUE,
+                         ncol = 1, nrow = 3)
+dif.season <- ggarrange( dif.cpue.p1 + rremove('xlab'),
+                         dif.cpue.np.p1 + rremove('xlab'), 
+                         dif.rich.p1, 
+                         labels = c('G', 'H' ,'I'), align = 'hv',
+                         legend = 'top', common.legend = TRUE,
+                         ncol = 1, nrow = 3)
+season.figs <- ggarrange(aov.season, scat.season, dif.season, ncol = 3, nrow =1)
+
+season.nms <- ggarrange(nms.2d.yr.p2.ef.ctr, labels = 'J')
+mbaci.season.figs <- ggarrange(season.figs,  season.nms, widths = c(3, 3), ncol = 1 , nrow = 2)
+
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Drafts/SeasonmBACI_figs.tiff",
+#        plot = mbaci.season.figs, device = 'tiff',
+#        width = 8, height = 14, units = "in", dpi = 300,
+#        compression = 'lzw')
+
+````
+
+Combined Arthur BACI figures
+```{r}
+# column 1 -- short term bargraphs
+aov1.art <- ggarrange(art.15.pbar.cpue + rremove('xlab'), 
+                      art.15.pbar.npcpue + rremove('xlab'), 
+                      art.15.pbar.n0, 
+          ncol = 1, nrow = 3, align = 'hv',
+          common.legend = TRUE, 
+          labels = c('A', 'B', 'C'))
+
+# column 2 -- seasonal bargraphs
+aov2.art <- ggarrange(art.pbar.cpue + rremove('xlab'), 
+                      art.pbar.npcpue + rremove('xlab'),
+                      art.pbar.n0, 
+                      ncol = 1, nrow = 3, align = 'hv',
+                      common.legend = TRUE, 
+                      labels = c('D', 'E', 'F'))
+
+bars.art <- ggarrange(art.15.pbar.cpue + rremove('xlab'), 
+          art.pbar.cpue + rremove('xlab') + rremove('ylab'), 
+          art.15.pbar.npcpue + rremove('xlab'), 
+          art.pbar.npcpue + rremove('xlab') + rremove('ylab'),
+          art.15.pbar.n0, 
+          art.pbar.n0 + rremove('ylab'), 
+          ncol = 2, nrow = 3, align = 'hv',
+          common.legend = TRUE,
+          labels = c('A', 'D', 'B', 'E', 'C', 'F')
+          )
+
+# all predicted scatterplots (column 3)
+scat.art <- ggarrange(art.cpue.p3 + rremove('xlab'),
+                      art.cpue.np.p3 + rremove('xlab'),
+                      art.n0.p3, 
+          ncol = 1, nrow = 3, align = 'hv',
+          common.legend = TRUE, legend = 'top', 
+          labels = c('H', 'I', 'J'))
+
+# all difference smooths (column 3)
+dif.art <- ggarrange(dif.art.cpue.p1, dif.art.cpue.np.p1, dif.art.n0.p1, 
+                     ncol = 1, nrow = 3, align = 'hv',
+                     common.legend = TRUE, 
+                     labels = c('K', 'L', 'M'))
+
+## all combined
+art.figs <- ggarrange(bars.art, scat.art, dif.art, ncol = 3, widths = c(2, 1, 1))
+
+ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Drafts/artfigs.tiff",
+       plot = art.figs, device = 'tiff',
+       width = 13, height = 8, units = "in", dpi = 300,
+       compression = 'lzw')
+```
+
+Combined Matthew Figures
+```{r} 
+# ArthurL short term bargraph, Arthur:seasonal bargraph, Arthur:scatter plot (with predicted lines), Arthur difference plot, Matthew Seasonal bargraph
+matt.figs <- ggarrange(
+  matt.pbar.cpue + rremove('xlab'), 
+  matt.pbar.npcpue + rremove('xlab'),
+  matt.pbar.n0,
+  labels = 'AUTO', align = 'hv', legend = 'none', 
+  ncol = 1, nrow = 3)
+
+ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/Drafts/mattfigs.tiff",
+       plot = matt.figs, device = 'tiff',
+       width = 2.75, height = 7, units = "in", dpi = 300,
+       compression = 'lzw')
+
+```
+
+Save Fig 4
+```{r, eval = FALSE}
+# ggsave("/Users/yinsanzhang/Dropbox/Hurricane_Fish_Diversity/MS Drafts/2022/April/Figures/tiffs/Fig4.tiff",
+#        plot = last_plot(), device = 'tiff',
+#        width = 16, height = 8.5, units = "in", dpi = 300)
+
+```
+
+
+Save Rdata file
+```{r}
+save.image(file = "HurricaneRData.RData")
+
+
+```
