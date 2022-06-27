@@ -7,3 +7,5 @@ This file does the following:
 3. Runs ANOVAs, GAMs, GLMS, community structure analyses to determine if fishes are affected by hurricanes.
 4. Runs exploratory data analysis on seagrass percent cover at four meadows in the study area to examine hurricane-related changes in seagrass cover.
 5. Creates figures for the manuscript
+
+All data files (.xlsx) contain a secondary tab with associated metadata.
