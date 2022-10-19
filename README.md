@@ -1,4 +1,4 @@
-This repo contains the associated data files and code for Zhang et al XXXX, titled "Tropical cyclone impacts on seagrass-associated fishes in a temperate-subtropical estuary" submitted to PLOS ONE. 
+This repo contains the associated data files and code for Zhang et al 2022, "Tropical cyclone impacts on seagrass-associated fishes in a temperate-subtropical estuary" published at PLOS ONE. 
 
 This file does the following:
 
