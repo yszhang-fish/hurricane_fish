@@ -1,6 +1,6 @@
 This repo contains the associated data files and code for Zhang et al 2022, "Tropical cyclone impacts on seagrass-associated fishes in a temperate-subtropical estuary" published at PLOS ONE. 
 
-This file does the following:
+The HurricaneFish_AllStats.Rmd file does the following:
 
 1. Load packages and functions needed to run the code 
 2. Prepare and subset the fish and hurricane intensity data based upon a BACI framework. 
